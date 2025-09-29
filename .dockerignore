@@ -15,6 +15,7 @@ __pycache__/
 .ruff.toml
 mypy.ini
 pytest.ini
+.trae
 
 # Documentation & Local Config
 Dockerfile
