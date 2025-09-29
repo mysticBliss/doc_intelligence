@@ -27,7 +27,7 @@ class DIPClient:
             response = await client.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
-                timeout=600.0,
+                timeout=settings.DIP_GENERATE_TIMEOUT,
             )
             response.raise_for_status()
             return DIPResponse(**response.json())

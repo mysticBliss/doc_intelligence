@@ -191,43 +191,28 @@ async def process_pdf(
         
         log.info("Successfully received response from DIP generate endpoint")
 
-        # --- Schedule Audit Event ---
-        response_time_ms = (time.time() - start_time) * 1000
-        audit_event = AuditEvent(
-            event_name=AuditEventName.PROCESS_PDF_SUCCESS,
-            correlation_id=get_correlation_id(),
-            timestamp=datetime.utcnow().isoformat(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            http_method=request.method,
-            endpoint_path=request.url.path,
-            http_status_code=200,
-            response_time_ms=response_time_ms,
-            event_data={
-                "file_name": pdf_file.filename,
-                "file_size": len(pdf_contents),
-                "page_count": len(image_bytes_list),
-                "prompt": text_prompt,
-                "model_used": model_name,
-            },
-        )
-        background_tasks.add_task(log_audit_event, audit_event)
-
-        return response
     except httpx.HTTPStatusError as e:
         log.error(
             "DIP service returned an error",
             status_code=e.response.status_code,
             response_text=e.response.text,
-            request_details=e.request.url,
+            error=str(e),
         )
         raise HTTPException(
             status_code=502,  # Bad Gateway
-            detail=f"Error from DIP service: {e.response.status_code} - {e.response.text}",
+            detail=f"Error from DIP service: {e.response.text}",
+        )
+    except httpx.TimeoutException as e:
+        log.error("Request to DIP service timed out", error=str(e))
+        raise HTTPException(status_code=504, detail="Request to DIP service timed out.")
+    except httpx.RequestError as e:
+        log.error("Failed to connect to DIP service", error=str(e))
+        raise HTTPException(
+            status_code=503,  # Service Unavailable
+            detail=f"Failed to connect to DIP service: {e}",
         )
     except Exception as e:
-        log.error("Failed to get response from DIP", error=str(e))
-
+        log.error("An unexpected error occurred while processing the PDF", error=str(e))
         # --- Schedule Audit Event for Failure ---
         response_time_ms = (time.time() - start_time) * 1000
         audit_event = AuditEvent(
@@ -247,10 +232,32 @@ async def process_pdf(
             },
         )
         background_tasks.add_task(log_audit_event, audit_event)
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get response from DIP: {e}"
-        )
+
+    # --- Schedule Audit Event ---
+    response_time_ms = (time.time() - start_time) * 1000
+    audit_event = AuditEvent(
+        event_name=AuditEventName.PROCESS_PDF_SUCCESS,
+        correlation_id=get_correlation_id(),
+        timestamp=datetime.utcnow().isoformat(),
+        client_ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        http_method=request.method,
+        endpoint_path=request.url.path,
+        http_status_code=200,
+        response_time_ms=response_time_ms,
+        event_data={
+            "file_name": pdf_file.filename,
+            "file_size": len(pdf_contents),
+            "page_count": len(image_bytes_list),
+            "prompt": text_prompt,
+            "model_used": model_name,
+        },
+    )
+    background_tasks.add_task(log_audit_event, audit_event)
+
+    return response
 
 
 @router.post("/chat", response_model=DIPChatResponse)

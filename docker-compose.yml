@@ -14,6 +14,11 @@ services:
     volumes:
       - ./model:/root/.ollama
     container_name: ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     entrypoint: /bin/sh
     command: -c "ollama serve & sleep 5 && ollama pull qwen2.5vl:3b && ollama list && wait"
 
@@ -25,10 +30,12 @@ services:
       - "8000:8000"
     environment:
       - DIP_BASE_URL=http://ollama:11434
-    depends_on:
-      - ollama
-      - redis
-    container_name: doc_intelligence_api
+    # depends_on:
+    #   ollama:
+    #     condition: service_healthy
+    #   redis:
+    #     condition: service_started
+    # container_name: doc_intelligence_api
 
   ui:
     build:
