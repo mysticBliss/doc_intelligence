@@ -1,0 +1,15 @@
+# .ruff.toml
+
+# Same as Black.
+line-length = 88
+
+# Assume Python 3.11.
+target-version = "py311"
+
+# Enable the isort rules.
+[lint]
+select = ["E", "F", "W", "I"]
+
+[format]
+# Like Black, use double quotes for strings.
+quote-style = "double"

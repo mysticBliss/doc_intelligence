@@ -1,0 +1,22 @@
+[
+    {
+        "name": "Default OCR",
+        "description": "A standard pipeline for clean, high-quality documents.",
+        "steps": ["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive"]
+    },
+    {
+        "name": "Noisy Document",
+        "description": "A more aggressive pipeline for scanned or faxed documents with noise.",
+        "steps": ["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive", "denoise"]
+    },
+    {
+        "name": "Grayscale Only",
+        "description": "A minimal pipeline for models that handle preprocessing internally.",
+        "steps": ["to_grayscale"]
+    },
+    {
+        "name": "Binarize Only",
+        "description": "For when you only need a black and white image.",
+        "steps": ["binarize_adaptive"]
+    }
+]

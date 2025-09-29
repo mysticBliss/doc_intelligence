@@ -1,0 +1,44 @@
+
+
+services:
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    container_name: redis
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./model:/root/.ollama
+    container_name: ollama
+    entrypoint: /bin/sh
+    command: -c "ollama serve & sleep 5 && ollama pull qwen2.5vl:3b && ollama list && wait"
+
+  api:
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DIP_BASE_URL=http://ollama:11434
+    depends_on:
+      - ollama
+      - redis
+    container_name: doc_intelligence_api
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui.Dockerfile
+    ports:
+      - "7860:7860"
+    depends_on:
+      - api
+    environment:
+      - API_URL=http://api:8000/api/process_pdf
+    container_name: doc_intelligence_ui
+    command: ["python", "app_ui.py"]

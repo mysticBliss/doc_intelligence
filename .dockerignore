@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# IDE / Tooling
+.trae/
+.ruff.toml
+mypy.ini
+pytest.ini
+
+# Documentation & Local Config
+Dockerfile
+docker-compose.yml
+README.md
