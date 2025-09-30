@@ -9,37 +9,62 @@ from fastapi import (
     BackgroundTasks,
 )
 from typing import Optional
-from core.config import config
-from core.limiter import limiter
-from domain.models import (
+from app.core.config import config
+from app.core.limiter import limiter
+from app.domain.models import (
     DIPRequest,
     DIPResponse,
     DIPChatRequest,
     DIPChatResponse,
     ChatMessage,
-    DocumentMetadata,
-    AuditEvent,
-    AuditEventName,
     ChatRequest,
     PipelineTemplate,
+    ImageProcessingRequest,
+    ImageProcessingResponse,
 )
-from infrastructure.dip_client import DIPClient, get_dip_client
-from services.pdf_processor import PDFProcessor
-from services.image_preprocessor import ImagePreprocessor
-from services.factory import get_pdf_processor, get_image_preprocessor, get_template_service
-from services.template_service import TemplateService
-from core.context import get_request_context, get_correlation_id
-from core.auditing import log_audit_event
+from app.infrastructure.dip_client import DIPClient, get_dip_client, DIPClientPort
+from app.services.pdf_processor import PDFProcessor
+from app.services.factory import get_pdf_processor, get_template_service, get_image_processing_service
+from app.services.template_service import TemplateService
+from app.services.image_processing_service import ImageProcessingService
+from app.core.context import get_request_context, get_correlation_id
 import base64
 import time
-from datetime import datetime
 from typing import List
+
+import asyncio
 
 import httpx
 import structlog
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
+
+@router.post("/images/process", response_model=ImageProcessingResponse)
+@limiter.limit("30/minute")
+async def process_image(
+    request: Request,
+    body: ImageProcessingRequest,
+    image_service: ImageProcessingService = Depends(get_image_processing_service),
+):
+    """
+    Processes a single image through a dynamic pipeline of processing gears.
+
+    This endpoint provides a flexible way to apply various processing steps
+    (e.g., preprocessing, OCR, VLM analysis) to an image by specifying them
+    in the `gears_to_run` list.
+    """
+    try:
+        # The service layer handles the core logic, making the endpoint a lean adapter.
+        response = image_service.process_image(body)
+        return response
+    except ValueError as e:
+        # Handle specific, known errors, such as an unknown gear
+        logger.warn("Image processing failed due to invalid gear request", error=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("An unexpected error occurred during image processing", error=str(e))
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
 
 @router.get("/pipeline-templates", response_model=List[PipelineTemplate])
@@ -55,7 +80,7 @@ async def get_pipeline_templates(
 async def generate(
     request: Request,
     body: DIPRequest,
-    dip_client: DIPClient = Depends(get_dip_client),
+    dip_client: DIPClientPort = Depends(get_dip_client),
     pdf_processor: PDFProcessor = Depends(get_pdf_processor),
 ):
     body.model = config.default_model
@@ -116,9 +141,9 @@ async def process_pdf(
     text_prompt: str = Form("Describe the content of these pages."),
     page_numbers: Optional[str] = Form(None),  # Expect a comma-separated string
     pipeline_steps: Optional[str] = Form(None), # Expect a comma-separated string
-    dip_client: DIPClient = Depends(get_dip_client),
+    dip_client: DIPClientPort = Depends(get_dip_client),
     pdf_processor: PDFProcessor = Depends(get_pdf_processor),
-    image_preprocessor: ImagePreprocessor = Depends(get_image_preprocessor),
+    image_service: ImageProcessingService = Depends(get_image_processing_service),
 ):
     start_time = time.time()
     model_name = config.default_model
@@ -151,147 +176,122 @@ async def process_pdf(
         image_bytes_list, page_metadata = pdf_processor.pdf_to_images(
             pdf_contents, page_numbers=processed_page_numbers or None
         )
-        log.info(f"Successfully converted PDF to {len(image_bytes_list)} images")
-
-        # --- Image Preprocessing ---
-        pipeline = pipeline_steps.split(',') if pipeline_steps else []
-        processed_image_bytes_list, processing_results = image_preprocessor.run_pipeline_on_list(
-            image_bytes_list, pipeline=pipeline
-        )
-        log.info("Successfully preprocessed images")
-
-    except Exception as e:
-        log.error("Failed to process PDF", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {e}")
-
-    if not processed_image_bytes_list:
-        log.warn("No images could be generated from the PDF")
-        raise HTTPException(
-            status_code=400, detail="No images could be generated from the PDF."
+        log.info(
+            f"Successfully converted {len(image_bytes_list)} pages to images.",
+            correlation_id=get_correlation_id(),
         )
 
-    encoded_images = [
-        base64.b64encode(img_bytes).decode("utf-8") for img_bytes in processed_image_bytes_list
-    ]
+        # --- Natively Asynchronous Image Preprocessing ---
+        tasks = []
+        document_id = get_correlation_id() if len(image_bytes_list) > 1 else None
 
-    dip_request = DIPRequest(
-        model=model_name,
-        prompt=text_prompt,
-        images=encoded_images,
-        stream=False,  # Assuming this is not a streaming response
-    )
+        for img_bytes in image_bytes_list:
+            req = ImageProcessingRequest(
+                image_data=base64.b64encode(img_bytes).decode("utf-8"),
+                gears_to_run=["image_preprocessor"],
+                preprocessing_steps=pipeline_steps.split(',') if pipeline_steps else None,
+                document_id=document_id,
+            )
+            tasks.append(image_service.process_image(req))
 
-    try:
-        # Route to the generate endpoint
+        # Concurrently run all processing tasks
+        img_proc_responses: List[ImageProcessingResponse] = await asyncio.gather(*tasks)
+
+        processed_images_b64 = [
+            gear_result.result_data["processed_image_b64"]
+            for response in img_proc_responses
+            if response.results
+            for gear_result in response.results
+            if gear_result.gear_name == "image_preprocessor"
+        ]
+
+        # Create a new DIPRequest with the processed images
+        dip_request = DIPRequest(
+            model=model_name,
+            prompt=text_prompt,
+            images=processed_images_b64,
+            stream=False,
+        )
+
         response = await dip_client.generate(dip_request)
         response.request_context = get_request_context()
-        
-        # Assign the detailed processing results to the response model
-        response.processing_results = processing_results
-        
-        log.info("Successfully received response from DIP generate endpoint")
 
-    except httpx.HTTPStatusError as e:
-        log.error(
-            "DIP service returned an error",
-            status_code=e.response.status_code,
-            response_text=e.response.text,
-            error=str(e),
-        )
-        raise HTTPException(
-            status_code=502,  # Bad Gateway
-            detail=f"Error from DIP service: {e.response.text}",
-        )
-    except httpx.TimeoutException as e:
-        log.error("Request to DIP service timed out", error=str(e))
-        raise HTTPException(status_code=504, detail="Request to DIP service timed out.")
-    except httpx.RequestError as e:
-        log.error("Failed to connect to DIP service", error=str(e))
-        raise HTTPException(
-            status_code=503,  # Service Unavailable
-            detail=f"Failed to connect to DIP service: {e}",
-        )
-    except Exception as e:
-        log.error("An unexpected error occurred while processing the PDF", error=str(e))
-        # --- Schedule Audit Event for Failure ---
-        response_time_ms = (time.time() - start_time) * 1000
-        audit_event = AuditEvent(
-            event_name=AuditEventName.PROCESS_PDF_FAILURE,
+        if document_id:
+            response.document_id = document_id
+
+        log.info(
+            "Successfully preprocessed images and generated response.",
             correlation_id=get_correlation_id(),
-            timestamp=datetime.utcnow().isoformat(),
-            client_ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-            http_method=request.method,
-            endpoint_path=request.url.path,
-            http_status_code=500,
-            response_time_ms=response_time_ms,
-            event_data={
-                "file_name": pdf_file.filename,
-                "file_size": len(pdf_contents),
-                "error_message": str(e),
-            },
         )
-        background_tasks.add_task(log_audit_event, audit_event)
-        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+        return response
+
+    except httpx.ReadTimeout:
+        log.error("Request to DIP service timed out.")
+        raise HTTPException(status_code=504, detail="Request to DIP service timed out.")
+    except Exception as e:
+        log.error(f"An unexpected error occurred in process_pdf: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
 
 
-    # --- Schedule Audit Event ---
-    response_time_ms = (time.time() - start_time) * 1000
-    audit_event = AuditEvent(
-        event_name=AuditEventName.PROCESS_PDF_SUCCESS,
-        correlation_id=get_correlation_id(),
-        timestamp=datetime.utcnow().isoformat(),
-        client_ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        http_method=request.method,
-        endpoint_path=request.url.path,
-        http_status_code=200,
-        response_time_ms=response_time_ms,
-        event_data={
-            "file_name": pdf_file.filename,
-            "file_size": len(pdf_contents),
-            "page_count": len(image_bytes_list),
-            "prompt": text_prompt,
-            "model_used": model_name,
-        },
-    )
-    background_tasks.add_task(log_audit_event, audit_event)
-
-    return response
-
-
-@router.post("/chat", response_model=DIPChatResponse)
+@router.post("/chat/stream", response_model=DIPChatResponse)
 @limiter.limit("20/minute")
-async def chat(
+async def chat_stream(
     request: Request,
     body: ChatRequest,
-    dip_client: DIPClient = Depends(get_dip_client),
+    dip_client: DIPClientPort = Depends(get_dip_client),
+    pdf_processor: PDFProcessor = Depends(get_pdf_processor),
 ):
-    """
-    Provides a general-purpose chat endpoint.
-    """
-    model_name = config.default_model
-    log = logger.bind(model=model_name)
-    log.info("Received chat request")
-
-    chat_request = DIPChatRequest(
-        model=model_name,
-        messages=[
-            ChatMessage(
-                role="user",
-                content=body.prompt,
-            )
-        ],
-    )
-
+    body.model = config.default_model
+    log = logger.bind(model=body.model)
+    log.info("Received generate request")
     try:
-        response = await dip_client.chat(chat_request)
+        # --- Annotation Processing Logic ---
+        if body.annotated_images:
+            log.info(f"Processing {len(body.annotated_images)} annotated images.")
+            processed_images = []
+            for annotated_image in body.annotated_images:
+                original_image_bytes = base64.b64decode(annotated_image.image_data)
+                
+                if not annotated_image.annotations:
+                    # If there are no annotations, add the original image and continue
+                    processed_images.append(base64.b64encode(original_image_bytes).decode("utf-8"))
+                    continue
+
+                # Cropping logic based on the Strategy Pattern
+                for bbox in annotated_image.annotations:
+                    log.info(f"Cropping image with bbox: {bbox.dict()}")
+                    try:
+                        cropped_image_bytes = pdf_processor.crop_image(
+                            original_image_bytes, bbox
+                        )
+                        processed_images.append(base64.b64encode(cropped_image_bytes).decode("utf-8"))
+                    except Exception as crop_error:
+                        log.error("Failed to crop image", error=str(crop_error))
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to process bounding box: {crop_error}"
+                        )
+            
+            # Create a new DIPRequest with the processed images
+            # This replaces the original annotated_images with a flat list of cropped images
+            body = DIPRequest(
+                model=body.model,
+                prompt=body.prompt,
+                images=processed_images,
+                stream=body.stream
+            )
+
+        response = await dip_client.generate(body)
         response.request_context = get_request_context()
-        log.info("Successfully received response from DIP")
+        log.info("Successfully generated response")
         return response
+    except Exception as e:
+        log.error("Error during generation", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
     except httpx.HTTPStatusError as e:
         log.error(
-            "DIP service returned an error",
+            f"HTTP error occurred while communicating with DIP service: {e.response.text}",
             status_code=e.response.status_code,
             response_text=e.response.text,
             request_details=e.request.url,

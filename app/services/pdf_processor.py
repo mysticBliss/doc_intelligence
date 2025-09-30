@@ -2,7 +2,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 import io
 from typing import List, Tuple, Optional
-from domain.models import PageMetadata
+from app.domain.models import PageMetadata
 
 class PDFProcessor:
     def __init__(self, dpi: int = 300):

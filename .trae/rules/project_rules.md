@@ -42,3 +42,24 @@ Always provide:
 
 ## Decision Criteria
 Prioritize: Enterprise integration > Long-term maintainability > Developer productivity > Feature completeness
+
+## Project Working
+REMEMBER I AM USING DOCKER COMPOSE THAT HOSTED MY PLATFORM. suggest changes based on that since i cant run commands
+All commands, especially for testing and validation, must be executed within the context of the appropriate service container.
+
+## logging. 
+dont introduce any new logging libraries. use the existing structlog logger
+
+## PDF and Images linkage
+For any PDF we should has a unique ID and then, under it we have Images which are also unique by ID however, there should be a relation between the PDF and the images ; a father son relationship. Howver, when we only upload an Image or we have only single image in PDF then we dont need store parent son relationship.
+
+## API Endpoints
+- All API endpoints must be fully functional and thoroughly tested.
+- The API implementation should be **enterprise-grade**, addressing the following key areas:
+  - Security (authentication, authorization, encryption)
+  - Scalability and performance
+  - Reliability and fault tolerance
+  - Compliance with relevant standards and regulations
+  - Clear documentation for each endpoint
+- Future UI applications will be built to rely exclusively on this API for all functionality.
+- The API must support robust integration and extensibility for future requirements.

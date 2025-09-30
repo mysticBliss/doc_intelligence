@@ -7,8 +7,9 @@ from PIL import Image
 import time
 import hashlib
 import base64
+import asyncio
 import functools
-from domain.models import ProcessingStepResult, StepMetadata
+from app.domain.models import ProcessingStepResult, StepMetadata
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -19,21 +20,20 @@ def instrument_step(func):
     timing, image hashes, and parameters.
     """
     @functools.wraps(func)
-    def wrapper(self, img: np.ndarray, **kwargs) -> Tuple[np.ndarray, ProcessingStepResult]:
+    async def wrapper(self, img: np.ndarray, **kwargs) -> Tuple[np.ndarray, ProcessingStepResult]:
         step_name = func.__name__
         start_time = time.time()
 
         # Capture input state
-        input_bytes = self._cv2_to_bytes(img)
+        input_bytes = await asyncio.to_thread(self._cv2_to_bytes, img)
         input_hash = hashlib.md5(input_bytes).hexdigest()
 
         # Execute the actual processing step
-        # The 'return_type' is now handled by the decorator's logic
-        kwargs.pop('return_type', None) 
-        processed_img = func(self, img, **kwargs)
+        kwargs.pop('return_type', None)
+        processed_img = await func(self, img, **kwargs)
 
         # Capture output state
-        output_bytes = self._cv2_to_bytes(processed_img)
+        output_bytes = await asyncio.to_thread(self._cv2_to_bytes, processed_img)
         output_hash = hashlib.md5(output_bytes).hexdigest()
         
         processing_time_ms = (time.time() - start_time) * 1000
@@ -43,7 +43,7 @@ def instrument_step(func):
             input_hash=input_hash,
             output_hash=output_hash,
             processing_time_ms=processing_time_ms,
-            parameters=kwargs  # Capture any parameters passed to the step
+            parameters=kwargs
         )
 
         result = ProcessingStepResult(
@@ -68,57 +68,36 @@ class ImagePreprocessor:
     preprocessing strategy that can be combined into a pipeline.
     """
 
-    def run_pipeline_on_list(
+    async def run_pipeline_on_list(
         self, image_bytes_list: List[bytes], pipeline: Optional[List[str]] = None
     ) -> Tuple[List[bytes], List[List[ProcessingStepResult]]]:
         """
         Runs a configurable preprocessing pipeline on a list of image bytes.
-
-        Args:
-            image_bytes_list: A list of images, each as bytes.
-            pipeline: A list of strings specifying the preprocessing steps to apply.
-                      Defaults to ["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive"].
-
-        Returns:
-            A tuple containing:
-            - A list of final processed images, each as bytes.
-            - A list of lists of ProcessingStepResult objects, one for each page.
         """
         if pipeline is None:
             pipeline = ["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive"]
 
-        all_pages_results = []
-        final_images = []
-        for image_bytes in image_bytes_list:
-            processed_image, page_results = self.run_pipeline(image_bytes, pipeline)
-            final_images.append(self._cv2_to_bytes(processed_image))
-            all_pages_results.append(page_results)
+        tasks = [self.run_pipeline(image_bytes, pipeline) for image_bytes in image_bytes_list]
+        results = await asyncio.gather(*tasks)
+        
+        final_images = [await asyncio.to_thread(self._cv2_to_bytes, res[0]) for res in results]
+        all_pages_results = [res[1] for res in results]
             
         return final_images, all_pages_results
 
-    def run_pipeline(
+    async def run_pipeline(
         self, image_bytes: bytes, pipeline: List[str]
     ) -> Tuple[np.ndarray, List[ProcessingStepResult]]:
         """
         Runs a configurable preprocessing pipeline on a single image.
-
-        Args:
-            image_bytes: The input image as bytes.
-            pipeline: A list of strings specifying the preprocessing steps.
-
-        Returns:
-            A tuple containing:
-            - The final processed image as a NumPy array.
-            - A list of ProcessingStepResult objects.
         """
-        img = self._bytes_to_cv2(image_bytes)
+        img = await asyncio.to_thread(self._bytes_to_cv2, image_bytes)
         processing_results = []
 
         for step in pipeline:
             if hasattr(self, step):
                 method = getattr(self, step)
-                # The decorator now handles the return type and result creation
-                img, result = method(img)
+                img, result = await method(img)
                 processing_results.append(result)
             else:
                 logger.warning(f"Preprocessing step '{step}' not found. Skipping.")
@@ -138,11 +117,13 @@ class ImagePreprocessor:
         return buffer.tobytes()
 
     @instrument_step
-    def deskew(self, img: np.ndarray, **kwargs) -> np.ndarray:
+    async def deskew(self, img: np.ndarray, **kwargs) -> np.ndarray:
         """
         Deskews an image using the Radon transform.
-        This is critical for improving OCR accuracy on scanned documents.
         """
+        return await asyncio.to_thread(self._deskew_sync, img, **kwargs)
+
+    def _deskew_sync(self, img: np.ndarray, **kwargs) -> np.ndarray:
         grayscale = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         (h, w) = grayscale.shape
@@ -176,18 +157,20 @@ class ImagePreprocessor:
         return deskewed
 
     @instrument_step
-    def to_grayscale(self, img: np.ndarray, **kwargs) -> np.ndarray:
+    async def to_grayscale(self, img: np.ndarray, **kwargs) -> np.ndarray:
         """
         Converts an image to grayscale. Reduces complexity and noise.
         """
-        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        return await asyncio.to_thread(cv2.cvtColor, img, cv2.COLOR_BGR2GRAY)
 
     @instrument_step
-    def enhance_contrast(self, img: np.ndarray, **kwargs) -> np.ndarray:
+    async def enhance_contrast(self, img: np.ndarray, **kwargs) -> np.ndarray:
         """
         Enhances contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization).
-        This is particularly effective for images with uneven lighting.
         """
+        return await asyncio.to_thread(self._enhance_contrast_sync, img, **kwargs)
+
+    def _enhance_contrast_sync(self, img: np.ndarray, **kwargs) -> np.ndarray:
         if len(img.shape) > 2 and img.shape[2] > 1:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
@@ -195,11 +178,13 @@ class ImagePreprocessor:
         return clahe.apply(img)
 
     @instrument_step
-    def binarize_adaptive(self, img: np.ndarray, **kwargs) -> np.ndarray:
+    async def binarize_adaptive(self, img: np.ndarray, **kwargs) -> np.ndarray:
         """
         Applies adaptive thresholding to create a binary image.
-        This is a crucial step for isolating text from the background.
         """
+        return await asyncio.to_thread(self._binarize_adaptive_sync, img, **kwargs)
+
+    def _binarize_adaptive_sync(self, img: np.ndarray, **kwargs) -> np.ndarray:
         if len(img.shape) > 2 and img.shape[2] > 1:
             img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -208,9 +193,8 @@ class ImagePreprocessor:
         )
 
     @instrument_step
-    def denoise(self, img: np.ndarray, **kwargs) -> np.ndarray:
+    async def denoise(self, img: np.ndarray, **kwargs) -> np.ndarray:
         """
         Applies non-local means denoising to reduce noise while preserving edges.
-        Useful for noisy scans.
         """
-        return cv2.fastNlMeansDenoising(img, None, 10, 7, 21)
+        return await asyncio.to_thread(cv2.fastNlMeansDenoising, img, None, 10, 7, 21)

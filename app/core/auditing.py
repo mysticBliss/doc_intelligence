@@ -1,5 +1,5 @@
 import structlog
-from domain.models import AuditEvent
+from app.domain.models import AuditEvent
 
 logger = structlog.get_logger(__name__)
 

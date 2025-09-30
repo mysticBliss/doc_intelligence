@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.endpoints import router as api_router
-from core.logging import configure_logging
-from core.limiter import limiter
-from core.security import SecurityHeadersMiddleware
-from core.cache import init_cache, close_cache
+from app.api.endpoints import router as api_router
+from app.core.logging import configure_logging
+from app.core.limiter import limiter
+from app.core.security import SecurityHeadersMiddleware
+from app.core.cache import init_cache, close_cache
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from starlette.requests import Request
@@ -13,13 +13,20 @@ from starlette_prometheus import metrics, PrometheusMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 import structlog
 import uuid
-from domain.models import RequestContext
-from core.context import set_request_context
+from app.domain.models import RequestContext
+from app.core.context import set_request_context
 
 # Configure logging before creating the app instance
 configure_logging()
 
-app = FastAPI()
+app = FastAPI(
+    title="Document Intelligence Service",
+    description="An enterprise-grade API for intelligent document processing, incorporating advanced AI and computer vision capabilities.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/api/v1/openapi.json"
+)
 
 # --- Middleware Configuration ---
 

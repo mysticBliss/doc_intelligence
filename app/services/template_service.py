@@ -1,17 +1,18 @@
 import json
+import os
 from typing import List
 from pydantic import ValidationError
 import structlog
 
-from domain.models import PipelineTemplate
-from core.config import config
+from app.domain.models import PipelineTemplate
+from app.core.config import config
 
 logger = structlog.get_logger(__name__)
 
 class TemplateService:
     """Manages loading and accessing pipeline templates."""
 
-    def __init__(self, template_path: str = config.pipeline_templates_path):
+    def __init__(self, template_path: str = os.path.join(config.CONFIG_DIR, "pipeline_templates.json")):
         self._template_path = template_path
         self._templates = self._load_templates()
 

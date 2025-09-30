@@ -1,7 +1,7 @@
 import logging
 import sys
 import structlog
-from core.context import get_request_context
+from app.core.context import get_request_context
 
 def correlation_id_processor(logger, method_name, event_dict):
     """Add correlation_id to the log record if it exists in the context."""

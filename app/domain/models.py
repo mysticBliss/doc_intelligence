@@ -50,6 +50,7 @@ class DIPResponse(BaseModel):
     request_context: Optional["RequestContext"] = None
     # The outer list corresponds to pages, the inner list to processing steps for that page.
     processing_results: Optional[List[List[ProcessingStepResult]]] = None
+    document_id: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -127,3 +128,25 @@ class PipelineTemplate(BaseModel):
     name: str
     description: str
     steps: List[str]
+
+# --- New Models for Extensible Processing Framework ---
+
+class ProcessingGearResult(BaseModel):
+    """Standardized result from a single processing gear."""
+    gear_name: str
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    result_data: Dict[str, Any]
+
+class ImageProcessingRequest(BaseModel):
+    """Request to process a single image with a specified set of gears."""
+    image_data: str  # b64 encoded
+    gears_to_run: List[str]
+    preprocessing_steps: Optional[List[str]] = None
+    pipeline_name: str = "Default OCR"
+    document_id: Optional[str] = None
+
+class ImageProcessingResponse(BaseModel):
+    """Aggregated results from running multiple gears on an image."""
+    image_id: str
+    original_image_hash: str
+    results: List[ProcessingGearResult]

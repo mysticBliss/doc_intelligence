@@ -1,13 +1,13 @@
 FROM python:3.12
 
-WORKDIR /app
+WORKDIR /code
 
 COPY api-requirements.txt .
 
 # Force rebuild of dependencies
 RUN pip install --no-cache-dir -r api-requirements.txt
 
-COPY app/ .
+COPY app/ ./app
 COPY config/ ./config
 COPY main.py .
 

@@ -28,6 +28,7 @@ structlog
 slowapi
 starlette-prometheus
 opentelemetry-instrumentation-fastapi
+pybreaker
 
 # Caching
 fastapi-cache2[redis]
@@ -35,3 +36,4 @@ fastapi-cache2[redis]
 # Database
 sqlalchemy
 alembic
+asyncpg
