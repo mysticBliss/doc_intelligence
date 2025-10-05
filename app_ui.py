@@ -7,7 +7,7 @@ import io
 import base64
 
 # --- Constants ---
-API_URL = os.getenv("API_URL", "http://localhost:8000/api/process_pdf")
+API_URL = os.getenv("API_URL", "http://localhost:8000/api/v1/processing/run")
 CHAT_API_URL = "http://api:8000/api/chat"
 PIPELINE_TEMPLATES_URL = "http://api:8000/api/pipeline-templates"
 MAX_PAGES = 50
@@ -28,38 +28,45 @@ def get_pipeline_templates():
         gr.Warning(f"Failed to connect to the API to get templates: {e}")
         return [], gr.update(choices=[])
 
-def process_document(file, prompt_text, pipeline_steps, chatbot, *selected_pages):
+def process_document(file, prompt_text, template_name, chatbot, *selected_pages):
     """Processes the selected PDF pages and sends them to the backend API."""
     if file is None:
         gr.Warning("Please upload a PDF file.")
-        yield chatbot, gr.update(interactive=True), []
+        yield chatbot, gr.update(interactive=True), [], None
+        return
+
+    if not template_name:
+        gr.Warning("Please select a pipeline template.")
+        yield chatbot, gr.update(interactive=True), [], None
         return
 
     page_numbers = [i + 1 for i, selected in enumerate(selected_pages) if selected]
     if not page_numbers:
         gr.Warning("Please select at least one page to process.")
-        yield chatbot, gr.update(interactive=True), []
+        yield chatbot, gr.update(interactive=True), [], None
         return
 
-    files = {"pdf_file": (file.name, open(file.name, "rb"), "application/pdf")}
+    files = {"file": (file.name, open(file.name, "rb"), "application/pdf")}
     data = {
-        "text_prompt": prompt_text,
+        "prompt": prompt_text,
+        "template_name": template_name,
         "page_numbers": ",".join(map(str, page_numbers)),
-        "pipeline_steps": ",".join(pipeline_steps),
     }
 
     chatbot = chatbot or []
     chatbot.append({"role": "user", "content": prompt_text})
     chatbot.append({"role": "assistant", "content": "Processing your document... Please wait."})
-    yield chatbot, gr.update(interactive=False), []
+    yield chatbot, gr.update(interactive=False), [], None
 
     gallery_images = []
+    job_id = None
     try:
         response = requests.post(API_URL, files=files, data=data)
         response.raise_for_status()
         response_data = response.json()
         bot_message = response_data.get("response", "Sorry, I couldn't process that.")
         chatbot[-1] = {"role": "assistant", "content": bot_message} # Update the last message
+        job_id = response_data.get("job_id")
 
         processing_results = response_data.get("processing_results", [])
         if processing_results:
@@ -83,7 +90,7 @@ def process_document(file, prompt_text, pipeline_steps, chatbot, *selected_pages
     except Exception as e:
         chatbot[-1] = {"role": "assistant", "content": f"An unexpected error occurred: {e}"}
 
-    yield chatbot, gr.update(interactive=True), gallery_images
+    yield chatbot, gr.update(interactive=True), gallery_images, job_id
 
 def chat_with_api(message, history):
     """Sends a chat message to the backend and gets a response."""
@@ -161,7 +168,8 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
 
     # --- Data Stores ---
     pipeline_templates_store = gr.State([])
-    
+    job_id_store = gr.State(None)
+
     with gr.Tabs():
         with gr.TabItem("Document Analysis", id=0):
             with gr.Row(equal_height=True):
@@ -170,11 +178,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                     prompt = gr.Textbox(label="Prompt", placeholder="e.g., Summarize the key findings for the selected pages...")
                     
                     template_dropdown = gr.Dropdown(label="Pipeline Template", info="Select a template to pre-configure the pipeline.")
-                    pipeline_selection = gr.CheckboxGroup(
-                        choices=["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive", "denoise"],
-                        label="Image Preprocessing Pipeline",
-                        value=["deskew", "to_grayscale", "enhance_contrast", "binarize_adaptive"],
-                    )
                     submit_btn = gr.Button("Process Document", variant="primary")
                     
                     gr.Markdown("### Page Preview & Selection")
@@ -188,6 +191,29 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                 with gr.Column(scale=2):
                     doc_chatbot = gr.Chatbot(label="Document Analysis Chat", type='messages', height=600)
                     pipeline_gallery = gr.Gallery(label="Processing Steps", show_label=True, elem_id="gallery", columns=4, height=400)
+
+            gr.HTML("""
+                <script>
+                    function connectWebSocket(job_id) {
+                        const url = `ws://localhost:8000/api/v1/ws/status/${job_id}`;
+                        const websocket = new WebSocket(url);
+                        websocket.onmessage = function(event) {
+                            const status = event.data;
+                            const statusElement = document.getElementById('job-status');
+                            if (statusElement) {
+                                statusElement.innerText = `Status: ${status}`;
+                            }
+                        };
+                        websocket.onclose = function() {
+                            console.log('WebSocket connection closed');
+                        };
+                        websocket.onerror = function(error) {
+                            console.error('WebSocket error:', error);
+                        };
+                    }
+                </script>
+            """)
+            gr.Markdown("", elem_id="job-status")
 
         with gr.TabItem("General Chat", id=1):
             gr.Markdown("## General Purpose Chat")
@@ -218,8 +244,12 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     checkboxes = [p for p in page_previews if isinstance(p, gr.Checkbox)]
     submit_btn.click(
         fn=process_document,
-        inputs=[pdf_upload, prompt, pipeline_selection, doc_chatbot] + checkboxes,
-        outputs=[doc_chatbot, submit_btn, pipeline_gallery]
+        inputs=[pdf_upload, prompt, template_dropdown, doc_chatbot] + checkboxes,
+        outputs=[doc_chatbot, submit_btn, pipeline_gallery, job_id_store]
+    ).then(
+        fn=None,
+        inputs=[job_id_store],
+        js="(job_id) => { if (job_id) { connectWebSocket(job_id); } }"
     )
 
     # Load templates on page load for both tabs
@@ -227,12 +257,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         fn=get_pipeline_templates,
         inputs=[],
         outputs=[pipeline_templates_store, template_dropdown]
-    )
-
-    template_dropdown.change(
-        fn=update_pipeline_from_template,
-        inputs=[template_dropdown, pipeline_templates_store],
-        outputs=[pipeline_selection]
     )
 
 if __name__ == "__main__":

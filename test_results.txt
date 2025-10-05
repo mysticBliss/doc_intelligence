@@ -1,0 +1,250 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.13, pytest-7.1.1, pluggy-1.6.0
+rootdir: /app, configfile: pytest.ini, testpaths: tests
+plugins: cov-3.0.0, httpx-0.30.0, hypothesis-6.140.2, anyio-4.11.0
+collected 11 items
+
+tests/test_api.py .FF                                                    [ 27%]
+tests/api/test_health.py .                                               [ 36%]
+tests/api/test_pipelines.py F                                            [ 45%]
+tests/core/test_pipeline_config.py ..                                    [ 63%]
+tests/infrastructure/test_dip_client.py ss                               [ 81%]
+tests/services/test_pdf_processor.py ..                                  [100%]
+
+=================================== FAILURES ===================================
+________________________________ test_generate _________________________________
+
+client = <starlette.testclient.TestClient object at 0x7dadb5dd8350>
+
+    def test_generate(client):
+        with patch("app.api.v1.endpoints.pipelines.get_dip_client") as mock_get_dip_client:
+            mock_dip_client = MagicMock(spec=DIPClientPort)
+>           mock_dip_client.generate.return_value = "Generated text"
+
+tests/test_api.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock spec='DIPClientPort' id='138185035584912'>, name = 'generate'
+
+    def __getattr__(self, name):
+        if name in {'_mock_methods', '_mock_unsafe'}:
+            raise AttributeError(name)
+        elif self._mock_methods is not None:
+            if name not in self._mock_methods or name in _all_magics:
+>               raise AttributeError("Mock object has no attribute %r" % name)
+E               AttributeError: Mock object has no attribute 'generate'
+
+/usr/local/lib/python3.11/unittest/mock.py:653: AttributeError
+_____________________ test_generate_without_correlation_id _____________________
+
+client = <starlette.testclient.TestClient object at 0x7dadafe88250>
+
+    def test_generate_without_correlation_id(client):
+        with patch("app.api.v1.endpoints.pipelines.get_dip_client") as mock_get_dip_client:
+            mock_dip_client = MagicMock(spec=DIPClientPort)
+>           mock_dip_client.generate.return_value = "Generated text"
+
+tests/test_api.py:54: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock spec='DIPClientPort' id='138184934176208'>, name = 'generate'
+
+    def __getattr__(self, name):
+        if name in {'_mock_methods', '_mock_unsafe'}:
+            raise AttributeError(name)
+        elif self._mock_methods is not None:
+            if name not in self._mock_methods or name in _all_magics:
+>               raise AttributeError("Mock object has no attribute %r" % name)
+E               AttributeError: Mock object has no attribute 'generate'
+
+/usr/local/lib/python3.11/unittest/mock.py:653: AttributeError
+______________________________ test_run_pipeline _______________________________
+
+    def test_run_pipeline():
+        # Get the absolute path to the test image
+        image_path = Path(__file__).parent.parent / "test_data" / "test_receipt.png"
+    
+        with open(image_path, "rb") as image_file:
+>           response = client.post(
+                "/api/v1/processing/run",
+                files={"file": ("test_receipt.png", image_file, "image/png")},
+                data={"pipeline_name": "ocr_pipeline"},
+            )
+
+tests/api/test_pipelines.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.11/site-packages/starlette/testclient.py:608: in post
+    return super().post(
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:1157: in post
+    return self.request(
+/usr/local/lib/python3.11/site-packages/starlette/testclient.py:491: in request
+    return super().request(
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:837: in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:926: in send
+    response = self._send_handling_auth(
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:954: in _send_handling_auth
+    response = self._send_handling_redirects(
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:991: in _send_handling_redirects
+    response = self._send_single_request(request)
+/usr/local/lib/python3.11/site-packages/httpx/_client.py:1027: in _send_single_request
+    response = transport.handle_request(request)
+/usr/local/lib/python3.11/site-packages/starlette/testclient.py:372: in handle_request
+    raise exc
+/usr/local/lib/python3.11/site-packages/starlette/testclient.py:369: in handle_request
+    portal.call(self.app, scope, receive, send)
+/usr/local/lib/python3.11/site-packages/anyio/from_thread.py:321: in call
+    return cast(T_Retval, self.start_task_soon(func, *args).result())
+/usr/local/lib/python3.11/concurrent/futures/_base.py:456: in result
+    return self.__get_result()
+/usr/local/lib/python3.11/concurrent/futures/_base.py:401: in __get_result
+    raise self._exception
+/usr/local/lib/python3.11/site-packages/anyio/from_thread.py:252: in _call_func
+    retval = await retval_or_awaitable
+/usr/local/lib/python3.11/site-packages/fastapi/applications.py:1054: in __call__
+    await super().__call__(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/applications.py:123: in __call__
+    await self.middleware_stack(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py:186: in __call__
+    raise exc
+/usr/local/lib/python3.11/site-packages/starlette/middleware/errors.py:164: in __call__
+    await self.app(scope, receive, _send)
+/usr/local/lib/python3.11/site-packages/starlette/middleware/exceptions.py:62: in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py:64: in wrapped_app
+    raise exc
+/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    await app(scope, receive, sender)
+/usr/local/lib/python3.11/site-packages/starlette/routing.py:758: in __call__
+    await self.middleware_stack(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/routing.py:778: in app
+    await route.handle(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/routing.py:299: in handle
+    await self.app(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/routing.py:79: in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py:64: in wrapped_app
+    raise exc
+/usr/local/lib/python3.11/site-packages/starlette/_exception_handler.py:53: in wrapped_app
+    await app(scope, receive, sender)
+/usr/local/lib/python3.11/site-packages/starlette/routing.py:74: in app
+    response = await func(request)
+/usr/local/lib/python3.11/site-packages/fastapi/routing.py:278: in app
+    raw_response = await run_endpoint_function(
+/usr/local/lib/python3.11/site-packages/fastapi/routing.py:191: in run_endpoint_function
+    return await dependant.call(**values)
+src/app/api/v1/endpoints/pipelines.py:56: in run_pipeline
+    return await service.process_document(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <app.services.document_orchestration_service.DocumentOrchestrationService object at 0x7dadb4232590>
+file_data = b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+file_name = 'a4d6a853c53e7ce9f5c194663c583749_test_receipt.png'
+processor_names = ['ocr_processor'], processor_params = {}
+correlation_id = 'e14ceb37-ac79-4274-9c2a-bd3dfc8a1d5b'
+
+    async def process_document(
+        self,
+        file_data: bytes,
+        file_name: str,
+        processor_names: List[str],
+        processor_params: Dict[str, Any],
+        correlation_id: str,
+    ) -> DocumentProcessingResult:
+        """
+        Asynchronously processes a document through a pipeline of processors.
+    
+        This method serves as the central entry point for all document
+        processing tasks. It dynamically instantiates the required processors,
+        executes them in sequence, and returns a structured result.
+    
+        Args:
+            file_data: The raw byte content of the document to be processed.
+            file_name: The name of the file to be processed.
+            processor_names: A list of string identifiers for the processors
+                             to be executed.
+            processor_params: A dictionary of parameters to be passed to the
+                              processors.
+            correlation_id: A unique identifier for tracing the request across
+                            services.
+    
+        Returns:
+            A `DocumentProcessingResult` object containing the outcomes of each
+            processing step.
+        """
+        log = self.logger.bind(
+            correlation_id=correlation_id,
+            processor_names=processor_names,
+            processor_params=processor_params,
+        )
+        log.info("Starting document processing orchestration")
+    
+        # Generate a unique ID for the document
+        document_id = hashlib.md5(file_data).hexdigest()
+        file_name = f"{document_id}_{file_name}"
+    
+        # Save the file to storage
+        try:
+            file_url = self.storage_port.save_file(file_name, BytesIO(file_data), "application/octet-stream")
+            log.info(f"File saved to storage: {file_url}")
+        except Exception as e:
+            log.exception("Failed to save file to storage")
+            return DocumentProcessingResult(
+                results=[],
+                error=f"Failed to save file to storage: {e}",
+                correlation_id=correlation_id,
+            )
+    
+        # Construct the pipeline configuration from the request
+        pipeline_config = {
+            "pipeline": [
+                {"name": name, "params": processor_params.get(name, {})}
+                for name in processor_names
+            ]
+        }
+    
+>       pipeline = ProcessingPipeline(pipeline_config)
+E       TypeError: ProcessingPipeline.__init__() missing 1 required positional argument: 'factory'
+
+src/app/services/document_orchestration_service.py:97: TypeError
+=============================== warnings summary ===============================
+../usr/local/lib/python3.11/site-packages/starlette/formparsers.py:12
+  /usr/local/lib/python3.11/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    import multipart
+
+../usr/local/lib/python3.11/site-packages/httpx/_client.py:690
+../usr/local/lib/python3.11/site-packages/httpx/_client.py:690
+tests/test_api.py::test_run_pipeline
+tests/test_api.py::test_generate
+tests/test_api.py::test_generate_without_correlation_id
+  /usr/local/lib/python3.11/site-packages/httpx/_client.py:690: DeprecationWarning: The 'app' shortcut is now deprecated. Use the explicit style 'transport=WSGITransport(app=...)' instead.
+    warnings.warn(message, DeprecationWarning)
+
+<frozen importlib._bootstrap>:241
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:241
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:241
+  <frozen importlib._bootstrap>:241: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+tests/infrastructure/test_dip_client.py::test_chat_success
+tests/infrastructure/test_dip_client.py::test_chat_api_error
+  /usr/local/lib/python3.11/site-packages/_pytest/python.py:181: PytestUnhandledCoroutineWarning: async def functions are not natively supported and have been skipped.
+  You need to install a suitable plugin for your async framework, for example:
+    - anyio
+    - pytest-asyncio
+    - pytest-tornasync
+    - pytest-trio
+    - pytest-twisted
+    warnings.warn(PytestUnhandledCoroutineWarning(msg.format(nodeid)))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_api.py::test_generate - AttributeError: Mock object has no ...
+FAILED tests/test_api.py::test_generate_without_correlation_id - AttributeErr...
+FAILED tests/api/test_pipelines.py::test_run_pipeline - TypeError: Processing...
+============= 3 failed, 6 passed, 2 skipped, 13 warnings in 5.74s ==============

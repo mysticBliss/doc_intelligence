@@ -9,15 +9,23 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
 # IDE / Tooling
 .trae/
 .ruff.toml
 mypy.ini
 pytest.ini
-.trae
+.idea/
+.vscode/
 
-# Documentation & Local Config
-Dockerfile
-docker-compose.yml
-README.md
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local environment
+.env
+
+# Data and models
+model/models/

@@ -1,0 +1,35 @@
+{
+  "name": "advanced_pdf_analysis_dag",
+  "description": "Asynchronously extracts images from a PDF, then runs OCR and VLM analysis in parallel.",
+  "execution_mode": "dag",
+  "pipeline": {
+    "nodes": [
+      {
+        "id": "extract_images",
+        "processor": "pdf_extraction_processor",
+        "params": {
+          "resolution": 300,
+          "image_format": "PNG"
+        }
+      },
+      {
+        "id": "run_ocr",
+        "processor": "ocr_processor",
+        "dependencies": ["extract_images"],
+        "params": {
+          "language": "eng"
+        }
+      },
+      {
+        "id": "analyze_with_vlm",
+        "processor": "vlm_processor",
+        "dependencies": ["extract_images"],
+        "params": {
+          "prompt": "Describe the structure of this document.",
+          "temperature": 0.5,
+          "max_tokens": 512
+        }
+      }
+    ]
+  }
+}

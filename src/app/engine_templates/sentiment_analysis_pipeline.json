@@ -1,0 +1,17 @@
+{
+  "name": "sentiment_analysis_pipeline",
+  "description": "A simple workflow that runs OCR on an image.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "ocr_processor",
+      "params": {
+        "language": "eng"
+      }
+    },
+    {
+      "name": "sentiment_analyzer",
+      "params": {}
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ocr",
+  "description": "A fundamental pipeline that performs Optical Character Recognition (OCR) on a single image.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "ocr_processor",
+      "params": {
+        "language": "eng",
+        "dpi": 300
+      }
+    }
+  ]
+}

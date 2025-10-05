@@ -1,0 +1,23 @@
+{
+  "name": "image_deskew_ocr",
+  "description": "A simple workflow that first deskews an image and then runs OCR.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "image_preprocessing_processor",
+      "params": {
+        "steps": [
+          {
+            "name": "deskew"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ocr_processor",
+      "params": {
+        "language": "eng"
+      }
+    }
+  ]
+}

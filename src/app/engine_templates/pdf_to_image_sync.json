@@ -1,0 +1,15 @@
+{
+  "name": "pdf_to_image_sync",
+  "description": "Synchronously converts specific pages of a PDF to images with custom resolution and format.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "pdf_extraction_processor",
+      "params": {
+        "resolution": 300,
+        "image_format": "PNG",
+        "page_range": "1-2"
+      }
+    }
+  ]
+}

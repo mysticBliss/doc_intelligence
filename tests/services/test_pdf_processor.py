@@ -15,7 +15,7 @@ def dummy_pdf_bytes() -> bytes:
 def test_pdf_to_images_success(dummy_pdf_bytes):
     """Test that a valid PDF is converted into a list of image bytes."""
     processor = PDFProcessor()
-    image_bytes_list = processor.pdf_to_images(dummy_pdf_bytes)
+    image_bytes_list, _ = processor.pdf_to_images(dummy_pdf_bytes)
     assert isinstance(image_bytes_list, list)
     assert len(image_bytes_list) == 1
     assert isinstance(image_bytes_list[0], bytes)

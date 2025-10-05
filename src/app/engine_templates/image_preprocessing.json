@@ -1,0 +1,51 @@
+{
+  "name": "image_preprocessing_pipeline",
+  "description": "A pipeline that applies a series of preprocessing steps to an image.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "image_preprocessing_processor",
+      "params": {
+        "steps": [
+          {
+            "name": "correct_perspective"
+          },
+          {
+            "name": "deskew"
+          },
+          {
+            "name": "denoise",
+            "params": {
+              "strength": 10
+            }
+          },
+          {
+            "name": "opening",
+            "params": {
+              "kernel_size": 3
+            }
+          },
+          {
+            "name": "closing",
+            "params": {
+              "kernel_size": 3
+            }
+          },
+          {
+            "name": "enhance_contrast",
+            "params": {
+              "clip_limit": 2.0,
+              "tile_grid_size": 8
+            }
+          },
+          {
+            "name": "binarize",
+            "params": {
+              "adaptive": true
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

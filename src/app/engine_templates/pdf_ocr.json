@@ -1,0 +1,33 @@
+{
+  "name": "pdf_ocr",
+  "description": "A simple workflow that extracts images from a PDF, preprocesses them, and then runs OCR.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "pdf_extraction_processor",
+      "params": {
+        "resolution": 300,
+        "image_format": "PNG"
+      }
+    },
+    {
+      "name": "image_preprocessing_processor",
+      "params": {
+        "steps": [
+          {
+            "name": "deskew"
+          },
+          {
+            "name": "denoise"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ocr_processor",
+      "params": {
+        "language": "eng"
+      }
+    }
+  ]
+}

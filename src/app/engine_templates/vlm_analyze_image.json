@@ -1,0 +1,13 @@
+{
+  "name": "vlm_analyze_image",
+  "description": "An advanced pipeline for when simple text extraction is not enough. It sends an image to a Vision Language Model (VLM) for complex analysis, such as describing the image content or answering questions about it.",
+  "execution_mode": "simple",
+  "pipeline": [
+    {
+      "name": "vlm_processor",
+      "params": {
+        "prompt": "Describe this image in detail."
+      }
+    }
+  ]
+}

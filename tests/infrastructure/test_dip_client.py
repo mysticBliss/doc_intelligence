@@ -2,10 +2,15 @@ import pytest
 from pytest_httpx import HTTPXMock
 from app.infrastructure.dip_client import DIPClient
 from app.domain.models import DIPChatRequest, ChatMessage
+from typing import Any, Dict
+
+class MockDIPClient(DIPClient):
+    def run_pipeline(self, pipeline_name: str, file_path: str) -> Dict[str, Any]:
+        return {"status": "success"}
 
 @pytest.fixture
 def dip_client() -> DIPClient:
-    return DIPClient(base_url="http://test-dip:11434")
+    return MockDIPClient(base_url="http://test-dip:11434")
 
 async def test_chat_success(dip_client: DIPClient, httpx_mock: HTTPXMock):
     """Test successful chat completion."""

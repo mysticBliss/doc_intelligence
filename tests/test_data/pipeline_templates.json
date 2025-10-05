@@ -1,0 +1,12 @@
+
+[
+    {
+        "name": "Default OCR",
+        "steps": [
+            "deskew",
+            "to_grayscale",
+            "enhance_contrast",
+            "binarize_adaptive"
+        ]
+    }
+]

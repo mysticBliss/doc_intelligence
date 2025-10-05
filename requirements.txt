@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+structlog
+pydantic
+python-multipart
+httpx
+celery
+redis
+minio
