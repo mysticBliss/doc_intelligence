@@ -1,6 +1,6 @@
 import json
 from typing import List
-from app.domain.models import PipelineTemplate
+from app.api.v1.schemas.schemas import PipelineTemplate
 
 class PreprocessingService:
     """A service for managing preprocessing pipelines."""

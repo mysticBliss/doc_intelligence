@@ -41,14 +41,14 @@ class ImagePreprocessingProcessor(BaseProcessor):
             raise ValueError("Image Preprocessing 'steps' must be a list.")
 
     @instrument_step
-    async def process(self, *, payload: DocumentPayload, **kwargs: Any) -> ProcessorResult:
+    async def process(self, payload: DocumentPayload, *, logger: structlog.stdlib.BoundLogger) -> ProcessorResult:
         """
         Processes the document by applying a series of image enhancement steps.
         """
-        if not payload.image_data:
+        if not payload.file_content:
             raise ValueError("Image data is required for preprocessing.")
 
-        img = self._bytes_to_cv2(payload.image_data)
+        img = self._bytes_to_cv2(payload.file_content)
         executed_steps: List[ProcessingStepResult] = []
 
         for step_config in self.config["steps"]:
@@ -64,12 +64,10 @@ class ImagePreprocessingProcessor(BaseProcessor):
 
             params = step_config.get("params", {})
             self.logger.info(f"Executing step: {step_name}", params=params)
-            img = await step_func(img, **params)
-            # The decorator will handle the result logging
-            # For now, we don't have a detailed step result object here,
-            # this would require a bigger refactor of the decorator
-            executed_steps.append(ProcessingStepResult(step_name=step_name, status="success", metadata=StepMetadata(parameters=params)))
-
+            
+            # The instrumented sub-step now returns the result object directly
+            img, step_result = await step_func(img, **params)
+            executed_steps.append(step_result)
 
         final_image_bytes = self._cv2_to_bytes(img)
         result_data = ImagePreprocessingResult(
@@ -80,11 +78,10 @@ class ImagePreprocessingProcessor(BaseProcessor):
         return ProcessorResult(
             processor_name=self.name,
             status="success",
-            results=result_data.model_dump(),
-            image_data=final_image_bytes,
+            structured_results=result_data.model_dump(),
         )
 
-    def _get_available_steps(self) -> Dict[str, Callable[..., Coroutine[Any, Any, np.ndarray]]]:
+    def _get_available_steps(self) -> Dict[str, Callable[..., Coroutine[Any, Any, Tuple[np.ndarray, ProcessingStepResult]]]]:
         """
         Returns a dictionary of available image processing steps.
         """
@@ -114,12 +111,38 @@ class ImagePreprocessingProcessor(BaseProcessor):
             raise ValueError("Failed to encode image to bytes.")
         return buffer.tobytes()
 
+    async def _create_step_result(
+        self,
+        step_name: str,
+        input_img: np.ndarray,
+        output_img: np.ndarray,
+        params: Dict[str, Any],
+    ) -> ProcessingStepResult:
+        """Helper to create a ProcessingStepResult with all metadata."""
+        input_bytes = await asyncio.to_thread(self._cv2_to_bytes, input_img)
+        output_bytes = await asyncio.to_thread(self._cv2_to_bytes, output_img)
+
+        metadata = StepMetadata(
+            input_hash=hashlib.md5(input_bytes).hexdigest(),
+            output_hash=hashlib.md5(output_bytes).hexdigest(),
+            parameters=params,
+        )
+        return ProcessingStepResult(
+            step_name=step_name,
+            status="success",
+            input_image=base64.b64encode(input_bytes).decode('utf-8'),
+            output_image=base64.b64encode(output_bytes).decode('utf-8'),
+            metadata=metadata,
+        )
+
     @instrument_sub_step
-    async def deskew(self, img: np.ndarray) -> np.ndarray:
+    async def deskew(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Corrects skew in the image.
         """
-        return await asyncio.to_thread(self._deskew_sync, img)
+        processed_img = await asyncio.to_thread(self._deskew_sync, img)
+        result = await self._create_step_result("deskew", img, processed_img, kwargs)
+        return processed_img, result
 
     def _deskew_sync(self, img: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
@@ -138,84 +161,112 @@ class ImagePreprocessingProcessor(BaseProcessor):
         return rotated
 
     @instrument_sub_step
-    async def denoise(self, img: np.ndarray, strength: int = 10) -> np.ndarray:
+    async def denoise(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Removes noise from the image.
         """
-        return await asyncio.to_thread(cv2.fastNlMeansDenoisingColored, img, None, strength, 10, 7, 21)
-
+        strength = kwargs.get("strength", 10)
+        processed_img = await asyncio.to_thread(cv2.fastNlMeansDenoisingColored, img, None, strength, 10, 7, 21)
+        result = await self._create_step_result("denoise", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
-    async def to_grayscale(self, img: np.ndarray) -> np.ndarray:
+    async def to_grayscale(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Converts the image to grayscale.
         """
         if len(img.shape) == 3 and img.shape[2] == 3:
-             return await asyncio.to_thread(cv2.cvtColor, img, cv2.COLOR_BGR2GRAY)
-        return img
-
+            processed_img = await asyncio.to_thread(cv2.cvtColor, img, cv2.COLOR_BGR2GRAY)
+        else:
+            processed_img = img
+        result = await self._create_step_result("to_grayscale", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
     async def binarize(
-        self, img: np.ndarray, threshold: int = 127, adaptive: bool = False
-    ) -> np.ndarray:
+        self, img: np.ndarray, **kwargs: Any
+    ) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Binarizes the image.
         """
+        threshold = kwargs.get("threshold", 127)
+        adaptive = kwargs.get("adaptive", False)
+
+        grayscale_img = img
         if len(img.shape) > 2 and img.shape[2] != 1:
-            img = await self.to_grayscale(img)
+            grayscale_img, _ = await self.to_grayscale(img)
 
         if adaptive:
-            return await asyncio.to_thread(
+            processed_img = await asyncio.to_thread(
                 cv2.adaptiveThreshold,
-                img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                grayscale_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
             )
         else:
-            _, binary_img = await asyncio.to_thread(cv2.threshold, img, threshold, 255, cv2.THRESH_BINARY)
-            return binary_img
+            _, processed_img = await asyncio.to_thread(cv2.threshold, grayscale_img, threshold, 255, cv2.THRESH_BINARY)
+        
+        result = await self._create_step_result("binarize", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
     async def enhance_contrast(
-        self, img: np.ndarray, clip_limit: float = 2.0, tile_grid_size: int = 8
-    ) -> np.ndarray:
+        self, img: np.ndarray, **kwargs: Any
+    ) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Enhances the contrast of the image using CLAHE.
         """
+        clip_limit = kwargs.get("clip_limit", 2.0)
+        tile_grid_size = kwargs.get("tile_grid_size", 8)
+
+        grayscale_img = img
         if len(img.shape) > 2 and img.shape[2] != 1:
-            img = await self.to_grayscale(img)
+            grayscale_img, _ = await self.to_grayscale(img)
 
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_grid_size, tile_grid_size))
-        return await asyncio.to_thread(clahe.apply, img)
+        processed_img = await asyncio.to_thread(clahe.apply, grayscale_img)
+        result = await self._create_step_result("enhance_contrast", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
-    async def opening(self, img: np.ndarray, kernel_size: int = 3) -> np.ndarray:
+    async def opening(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Applies morphological opening to the image.
         """
+        kernel_size = kwargs.get("kernel_size", 3)
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        return await asyncio.to_thread(cv2.morphologyEx, img, cv2.MORPH_OPEN, kernel)
+        processed_img = await asyncio.to_thread(cv2.morphologyEx, img, cv2.MORPH_OPEN, kernel)
+        result = await self._create_step_result("opening", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
-    async def closing(self, img: np.ndarray, kernel_size: int = 3) -> np.ndarray:
+    async def closing(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Applies morphological closing to the image.
         """
+        kernel_size = kwargs.get("kernel_size", 3)
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        return await asyncio.to_thread(cv2.morphologyEx, img, cv2.MORPH_CLOSE, kernel)
+        processed_img = await asyncio.to_thread(cv2.morphologyEx, img, cv2.MORPH_CLOSE, kernel)
+        result = await self._create_step_result("closing", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
-    async def canny(self, img: np.ndarray, threshold1: int = 100, threshold2: int = 200) -> np.ndarray:
+    async def canny(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Applies Canny edge detection to the image.
         """
-        return await asyncio.to_thread(cv2.Canny, img, threshold1, threshold2)
+        threshold1 = kwargs.get("threshold1", 100)
+        threshold2 = kwargs.get("threshold2", 200)
+        processed_img = await asyncio.to_thread(cv2.Canny, img, threshold1, threshold2)
+        result = await self._create_step_result("canny", img, processed_img, kwargs)
+        return processed_img, result
 
     @instrument_sub_step
-    async def correct_perspective(self, img: np.ndarray) -> np.ndarray:
+    async def correct_perspective(self, img: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, ProcessingStepResult]:
         """
         Corrects the perspective of the image.
         """
-        return await asyncio.to_thread(self._correct_perspective_sync, img)
+        processed_img = await asyncio.to_thread(self._correct_perspective_sync, img)
+        result = await self._create_step_result("correct_perspective", img, processed_img, kwargs)
+        return processed_img, result
 
     def _correct_perspective_sync(self, img: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img

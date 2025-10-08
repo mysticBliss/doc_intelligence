@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from .api.v1.router import api_router
-from .core.logging import get_logger
+from .core.logging import LoggerRegistry
 
-# Configure logging
-logger = get_logger(__name__)
+# Configure enterprise logging
+logger = LoggerRegistry.get_api_logger("main")
 
 app = FastAPI(
     title="Document Intelligence API",
@@ -12,3 +12,6 @@ app = FastAPI(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+# Log application startup
+logger.info("Document Intelligence API initialized", version="1.0.0")

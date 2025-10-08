@@ -2,12 +2,13 @@ from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 from pdf2image.exceptions import PDFPageCountError
 import base64
 import io
+import uuid
 from typing import List, Any, Dict, Set
 import structlog
 
 from app.processing.decorators import instrument_step
-from app.processing.processors.base import BaseProcessor, ProcessorResult
-from app.processing.payloads import DocumentPayload
+from app.processing.processors.base import BaseProcessor
+from app.processing.payloads import DocumentPayload, ProcessorResult
 
 
 class PDFImageExtractionProcessor(BaseProcessor):
@@ -48,21 +49,38 @@ class PDFImageExtractionProcessor(BaseProcessor):
 
     def validate_config(self):
         """Validates the processor configuration."""
-        if "resolution" in self.config:
-            if not isinstance(self.config["resolution"], int) or self.config["resolution"] <= 0:
-                raise ValueError("Configuration 'resolution' must be a positive integer.")
+        if "resolution" not in self.config:
+            self.config["resolution"] = 300
+        elif not isinstance(self.config["resolution"], int) or self.config["resolution"] <= 0:
+            raise ValueError("Configuration 'resolution' must be a positive integer.")
         
         supported_formats = ["PNG", "JPEG", "TIFF"]
-        if "image_format" in self.config:
-            if self.config["image_format"].upper() not in supported_formats:
-                raise ValueError(f"Configuration 'image_format' must be one of {supported_formats}.")
+        if "image_format" not in self.config:
+            self.config["image_format"] = "PNG"
+        elif self.config["image_format"].upper() not in supported_formats:
+            raise ValueError(f"Configuration 'image_format' must be one of {supported_formats}.")
 
     @instrument_step
-    async def process(self, payload: DocumentPayload, **kwargs: Any) -> ProcessorResult:
-        """Extracts images from a PDF document based on configuration."""
-        pdf_bytes = base64.b64decode(payload.image_data)
+    async def process(self, payload: DocumentPayload, *, logger: structlog.stdlib.BoundLogger) -> ProcessorResult:
+        """Extracts images from a PDF, creating a new DocumentPayload for each page with lineage."""
+        if not payload.file_content:
+            self.logger.error("No file content found in payload for PDF extraction.")
+            return ProcessorResult(
+                processor_name=self.name,
+                status="failure",
+                error_message="Input payload must contain file_content for PDF processing."
+            )
+        
+        try:
+            pdf_bytes = payload.file_content
+        except Exception as e:
+            self.logger.error("pdf_extraction.base64_decode_failed", error=str(e))
+            return ProcessorResult(
+                processor_name=self.name,
+                status="failure",
+                error_message=f"Failed to decode base64 content from image_data: {e}"
+            )
 
-        # Get config with defaults
         resolution = self.config.get("resolution", 300)
         image_format = self.config.get("image_format", "PNG").upper()
         page_range_str = self.config.get("page_range")
@@ -71,51 +89,54 @@ class PDFImageExtractionProcessor(BaseProcessor):
             info = pdfinfo_from_bytes(pdf_bytes)
             max_pages = info["Pages"]
         except PDFPageCountError as e:
-            self.logger.error("pdf_extraction.failed", error="Could not determine page count from PDF.")
-            raise ValueError("Invalid PDF file: could not read page count.") from e
+            self.logger.error("pdf_extraction.failed", error="Could not determine page count.")
+            return ProcessorResult(processor_name=self.name, status="failure", error_message="Invalid PDF: could not read page count.")
 
         try:
             target_pages = self._parse_page_range(page_range_str, max_pages)
         except ValueError as e:
-            self.logger.error("pdf_extraction.failed", error=str(e))
-            raise e
+            self.logger.error("pdf_extraction.config_error", error=str(e))
+            return ProcessorResult(processor_name=self.name, status="failure", error_message=str(e))
 
         if not target_pages:
-            self.logger.info("pdf_extraction.finished", num_images=0, reason="Page range resulted in no pages to process.")
-            return ProcessorResult(
-                processor_name=self.name,
-                status="success",
-                results={"images": []},
-            )
+            self.logger.info("pdf_extraction.skipped", reason="Page range is empty.")
+            return ProcessorResult(processor_name=self.name, status="success", output="No pages selected for extraction.", structured_results={"document_payloads": []})
 
-        # Determine the bounding box for conversion
-        first_page_to_convert = min(target_pages)
-        last_page_to_convert = max(target_pages)
+        parent_doc_id = str(uuid.uuid4())
+        child_payloads = []
 
-        images = convert_from_bytes(
+        # Convert all pages in the required range at once for efficiency
+        all_images = convert_from_bytes(
             pdf_bytes,
             dpi=resolution,
-            first_page=first_page_to_convert,
-            last_page=last_page_to_convert,
             fmt=image_format.lower(),
+            thread_count=4  # Use multiple threads for faster conversion
         )
 
-        image_b64_list: List[str] = []
-        # The `images` list contains images from first_page_to_convert to last_page_to_convert.
-        # We need to filter this list to include only the pages in `target_pages`.
-        for i, img in enumerate(images):
-            current_page_number = first_page_to_convert + i
-            if current_page_number in target_pages:
-                buffered = io.BytesIO()
-                # The format is already handled by convert_from_bytes, but saving needs it again.
-                img.save(buffered, format=image_format)
-                img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                image_b64_list.append(img_b64)
+        page_map = {i + 1: img for i, img in enumerate(all_images)}
 
-        self.logger.info("pdf_extraction.finished", num_images=len(image_b64_list))
+        for page_num in sorted(list(target_pages)):
+            if page_num in page_map:
+                img_byte_arr = io.BytesIO()
+                page_map[page_num].save(img_byte_arr, format=image_format)
+                encoded_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+
+                new_payload = DocumentPayload(
+                    job_id=payload.job_id,
+                    file_name=f"{payload.file_name}_page_{page_num}.{image_format.lower()}",
+                    file_content=encoded_image,
+                    parent_document_id=parent_doc_id,
+                    page_number=page_num,
+                    results=[]
+                )
+                child_payloads.append(new_payload)
+
+        output_summary = f"Extracted {len(child_payloads)} pages from PDF."
+        self.logger.info("pdf_extraction.success", num_pages_extracted=len(child_payloads), parent_document_id=parent_doc_id)
 
         return ProcessorResult(
             processor_name=self.name,
             status="success",
-            results={"images": image_b64_list},
+            output=output_summary,
+            structured_results={"document_payloads": child_payloads},
         )

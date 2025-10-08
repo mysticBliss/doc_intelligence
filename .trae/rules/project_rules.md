@@ -50,11 +50,204 @@ Prioritize: Enterprise integration > Long-term maintainability > Developer produ
 REMEMBER I AM USING DOCKER COMPOSE THAT HOSTED MY PLATFORM. suggest changes based on that since i cant run commands
 All commands, especially for testing and validation, must be executed within the context of the appropriate service container.
 
-## logging. 
-dont introduce any new logging libraries. use the existing structlog logger
+## Enterprise Logging Standards
 
-## PDF and Images linkage
-For any PDF we should has a unique ID and then, under it we have Images which are also unique by ID however, there should be a relation between the PDF and the images ; a father son relationship. Howver, when we only upload an Image or we have only single image in PDF then we dont need store parent son relationship.
+**NEVER introduce any new logging libraries. Use only the existing `structlog` logger with the enterprise LoggerRegistry pattern.**
+
+### Enterprise Logging Architecture
+
+The application implements a **centralized logging configuration** with **hierarchical logger instances** following enterprise best practices. All logging uses `structlog` to produce structured JSON logs for effective monitoring, debugging, and analysis.
+
+#### **LoggerRegistry Pattern (Mandatory)**
+
+All loggers MUST be created using the `LoggerRegistry` class to ensure consistent naming and configuration:
+
+```python
+from app.core.logging import LoggerRegistry
+
+# API Layer Loggers
+api_logger = LoggerRegistry.get_api_logger("endpoints")
+main_logger = LoggerRegistry.get_api_logger("main")
+
+# Service Layer Loggers
+orchestration_logger = LoggerRegistry.get_service_logger("orchestration")
+config_logger = LoggerRegistry.get_service_logger("pipeline_config")
+
+# Processing Layer Loggers
+pipeline_logger = LoggerRegistry.get_pipeline_logger()
+processor_logger = LoggerRegistry.get_processor_logger("ocr_processor")
+
+# Infrastructure Layer Loggers
+celery_logger = LoggerRegistry.get_infrastructure_logger("celery")
+dip_logger = LoggerRegistry.get_infrastructure_logger("dip_client")
+
+# Security & Audit Loggers
+security_logger = LoggerRegistry.get_security_logger()
+```
+
+#### **Hierarchical Logger Naming Convention**
+
+All loggers follow a strict hierarchical naming pattern:
+
+- **API Layer**: `api.{component}` (e.g., `api.main`, `api.endpoints`)
+- **Service Layer**: `service.{service_name}` (e.g., `service.orchestration`)
+- **Processing Layer**: `processor.{processor_name}` (e.g., `processor.ocr_processor`)
+- **Pipeline Layer**: `pipeline.execution`
+- **Infrastructure Layer**: `infrastructure.{component}` (e.g., `infrastructure.celery`)
+- **Security Layer**: `security.audit`
+
+#### **Enterprise Logging Structure**
+
+Each log entry follows a structured JSON format universally supported by enterprise log management platforms:
+
+```json
+{
+    "timestamp": "2025-10-07T16:13:24.547342Z",
+    "level": "info",
+    "event": "Pipeline execution completed successfully",
+    "logger": "infrastructure.celery",
+    "correlation_id": "7132e41c-f960-468c-be31-2755751649e0",
+    "job_id": "7132e41c-f960-468c-be31-2755751649e0",
+    "pipeline_name": "advanced_pdf_analysis_dag",
+    "document_id": "869efa9570c239ed4cd4a53c03cbc00f",
+    "status": "success"
+}
+```
+
+#### **Mandatory Logging Rules**
+
+1. **DO** use keyword arguments for all contextual data:
+   ```python
+   logger.info(
+       "Pipeline execution completed successfully",
+       job_id=result.job_id,
+       status=result.status.value,
+       correlation_id=correlation_id
+   )
+   ```
+
+2. **DO NOT** use f-strings, `.format()`, or string concatenation in log messages:
+   ```python
+   # FORBIDDEN - breaks structured format
+   logger.info(f"Pipeline {pipeline_name} completed with status {status}")
+   ```
+
+3. **DO** include correlation IDs for distributed tracing:
+   ```python
+   logger = logger.bind(correlation_id=correlation_id)
+   ```
+
+4. **DO** use consistent event naming patterns:
+   - `{component}.{action}.{status}` (e.g., `"pipeline.execution.started"`)
+   - `{processor}.{operation}.{outcome}` (e.g., `"ocr.processing.finished"`)
+
+#### **Logger Creation Guidelines**
+
+**✅ CORRECT - Use LoggerRegistry:**
+```python
+from app.core.logging import LoggerRegistry
+
+class DocumentOrchestrationService:
+    def __init__(self, logger=None):
+        self.logger = logger or LoggerRegistry.get_service_logger("orchestration")
+```
+
+**❌ FORBIDDEN - Direct structlog calls:**
+```python
+# DO NOT USE - bypasses enterprise standards
+import structlog
+logger = structlog.get_logger(__name__)
+```
+
+#### **Enterprise Benefits Achieved**
+
+1. **Component Identification**: Easy filtering by service, processor, or infrastructure
+2. **Operational Excellence**: Enhanced monitoring and debugging capabilities
+3. **Centralized Configuration**: Single point of logging configuration
+4. **Hierarchical Organization**: Consistent naming across all components
+5. **Structured Output**: Machine-parseable JSON for automated analysis
+6. **Distributed Tracing**: Correlation IDs for request tracking across services
+
+This enterprise logging architecture ensures **observability**, **traceability**, and **maintainability** required for production-grade applications while following industry best practices.
+
+#### **Implementation Status**
+
+The following components have been updated to use the new `LoggerRegistry` pattern:
+
+**✅ Completed:**
+- `src/app/main.py` - Uses `LoggerRegistry.get_api_logger("main")`
+- `src/app/services/document_orchestration_service.py` - Uses `LoggerRegistry.get_service_logger("orchestration")`
+- `src/app/processing/factory.py` - Uses `LoggerRegistry.get_processor_logger(processor_name)`
+- `src/app/processing/pipeline.py` - Uses `LoggerRegistry.get_pipeline_logger()`
+- `src/app/processing/decorators.py` - Uses `LoggerRegistry.get_decorator_logger()`
+- `src/app/tasks/celery_worker.py` - Uses `LoggerRegistry.get_infrastructure_logger("celery")`
+- `src/app/infrastructure/dip_client.py` - Uses `LoggerRegistry.get_infrastructure_logger("dip_client")`
+- `src/app/core/pipeline_config.py` - Uses `LoggerRegistry.get_service_logger("pipeline_config")`
+
+**📋 Future Enhancements:**
+- API endpoints should use `LoggerRegistry.get_api_logger("endpoints")`
+- Individual processors should use `LoggerRegistry.get_processor_logger(processor_name)`
+- Security events should use `LoggerRegistry.get_security_logger()`
+
+#### **Logger Count Optimization**
+
+**Before**: 15-20+ inconsistent logger instances with mixed naming patterns
+**After**: 6 standardized logger categories with hierarchical naming:
+
+1. **API Loggers** (1-2 instances): `api.main`, `api.endpoints`
+2. **Service Loggers** (2-3 instances): `service.orchestration`, `service.pipeline_config`
+3. **Processor Loggers** (7+ instances): `processor.{processor_name}` (one per processor type)
+4. **Pipeline Logger** (1 instance): `pipeline.execution`
+5. **Infrastructure Loggers** (2-3 instances): `infrastructure.celery`, `infrastructure.dip_client`
+6. **Security Logger** (1 instance): `security.audit`
+
+## PDF and Images Processing Architecture
+
+### **Document-Image Relationship Model**
+
+The platform implements a hierarchical document-image relationship model:
+
+**Parent-Child Relationship:**
+- **PDF Document**: Has unique `document_id` (MD5 hash of file content)
+- **Extracted Images**: Each page becomes a separate image with unique `image_id`
+- **Relationship**: `parent_document_id` links images back to source PDF
+- **Page Context**: `page_number` maintains page order and context
+
+**Data Flow:**
+```
+PDF File → document_id (parent) → Page Images → image_id (children)
+         └─ parent_document_id ←─────────────────┘
+```
+
+**Special Cases:**
+- **Single Image Upload**: No parent-child relationship needed
+- **Single Page PDF**: Parent-child relationship maintained for consistency
+- **Multi-page PDF**: Full hierarchical structure with page numbering
+
+### **Image Processing Pipeline**
+
+**PDF Extraction Process:**
+1. **Input**: PDF file with `document_id`
+2. **Processing**: `pdf_extraction_processor` converts each page to image
+3. **Output**: Array of `DocumentPayload` objects (one per page)
+4. **Format**: PNG/JPEG at configurable DPI (default: 300)
+
+**Image Enhancement Pipeline:**
+- **Preprocessing**: Deskew, denoise, binarize, perspective correction
+- **OCR Optimization**: Page segmentation, language detection
+- **VLM Preparation**: Format optimization for vision models
+
+**Metadata Preservation:**
+```json
+{
+  "document_id": "869efa9570c239ed4cd4a53c03cbc00f",
+  "parent_document_id": "d1b78acc-83b6-485b-bb62-253d46a2adfe",
+  "page_number": 2,
+  "image_format": "PNG",
+  "resolution": 300,
+  "image_dimensions": [2480, 3508]
+}
+```
 
 ## API Endpoints
 - All API endpoints must be fully functional and thoroughly tested.
@@ -348,13 +541,211 @@ The `_run_linear` method in `ProcessingPipeline` now supports a more sophisticat
 This ensures that processors can be chained together in complex pipelines, and the documentation should specify how to format processor results to be compliant with this new logic.
 
 ### Asynchronous Task Execution with Celery
-A clear guide on how to define, register, and trigger asynchronous tasks using Celery. Best practices for interacting with the `run_pipeline_task` in `celery_worker.py`. Guidelines on how `DocumentOrchestrationService` offloads tasks to the Celery worker for background processing.
+
+#### **Celery Worker Implementation Standards**
+
+The `run_pipeline_task` in `celery_worker.py` follows enterprise patterns for reliable task execution:
+
+**✅ CORRECT Implementation Pattern:**
+```python
+@celery.task(bind=True)
+def run_pipeline_task(self, pipeline_config, file_data, file_name, correlation_id):
+    logger = LoggerRegistry.get_infrastructure_logger("celery")
+
+    # Initialize result outside try block for proper scope
+    result = None
+
+    try:
+        result = loop.run_until_complete(main())
+
+        # Update Celery's state with final result
+        self.update_state(
+            state='SUCCESS',
+            meta={'result': result.model_dump_json()}
+        )
+
+        logger.info(
+            "Pipeline execution completed successfully",
+            job_id=result.job_id,
+            status=result.status.value,
+            correlation_id=correlation_id
+        )
+
+        # Return JSON string for consistent format
+        return result.model_dump_json()
+
+    except Exception:
+        logger.exception("Celery task failed unexpectedly", correlation_id=correlation_id)
+        self.update_state(
+            state='FAILURE',
+            meta={'error': 'Pipeline execution failed'}
+        )
+        raise
+    finally:
+        loop.close()
+```
+
+**Key Requirements:**
+1. **Variable Scope**: Initialize `result = None` before try block
+2. **State Management**: Use `self.update_state()` for both SUCCESS and FAILURE
+3. **Consistent Returns**: Return `result.model_dump_json()` for JSON format
+4. **Enterprise Logging**: Use `LoggerRegistry.get_infrastructure_logger("celery")`
+5. **Error Handling**: Proper exception logging with correlation IDs
+
+#### **Task Status Endpoint Integration**
+
+The `/api/v1/processing/status/{job_id}` endpoint relies on proper Celery task state management:
+
+- **PENDING**: Task is queued but not started
+- **IN_PROGRESS**: Task is actively running (set by worker)
+- **SUCCESS**: Task completed successfully (result available in meta)
+- **FAILURE**: Task failed with error (error details in meta)
+
+Guidelines on how `DocumentOrchestrationService` offloads tasks to the Celery worker for background processing.
 
 ### Environment Variable and Docker Compose Standards
 A strict convention for environment variables must be enforced. For example, all services must use `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` for MinIO credentials. The `docker-compose.yml` file should be the single source of truth for service configuration, and the `.env` file should only contain the values for these variables. This avoids the kind of `AccessDenied` errors we encountered.
 
 ### Debugging and Observability
-A troubleshooting guide for common issues, such as empty processing results or service connection errors. Instructions on how to inspect the logs of specific services (e.g., `api`, `celery-worker`, `minio`) using `docker compose logs <service_name>` to diagnose problems.
+
+#### **Common Issues and Solutions**
+
+**1. Pipeline Status Shows "in_progress" Despite Completion**
+
+**Symptoms:**
+- Celery logs show successful pipeline completion
+- Status endpoint returns `{"status":"in_progress","result":null,"error":null}`
+- Task appears stuck in PENDING state
+
+**Root Cause:** Variable scope issues in celery worker or missing state updates
+
+**Solution:**
+```python
+# ✅ CORRECT - Initialize result before try block
+result = None
+try:
+    result = loop.run_until_complete(main())
+    self.update_state(state='SUCCESS', meta={'result': result.model_dump_json()})
+    return result.model_dump_json()
+except Exception:
+    self.update_state(state='FAILURE', meta={'error': 'Pipeline execution failed'})
+    raise
+```
+
+**2. Empty Processing Results**
+
+**Debugging Steps:**
+```bash
+# Check celery worker logs
+docker compose logs celery-worker
+
+# Check API service logs
+docker compose logs api
+
+# Check MinIO connectivity
+docker compose logs minio
+```
+
+**3. Service Connection Errors**
+
+**Common Environment Variable Issues:**
+- Ensure `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` are consistent across services
+- Verify `OLLAMA_BASE_URL` points to correct service
+- Check Redis connection settings for Celery
+
+#### **Log Inspection Commands**
+
+```bash
+# View recent logs (recommended)
+docker compose logs api
+docker compose logs celery-worker
+docker compose logs minio
+
+# Check service status
+docker compose ps
+
+# Restart specific service
+docker compose restart celery-worker
+```
+
+**⚠️ NEVER use `docker compose logs -f api` - use `docker compose logs api` instead**
+
+## **Testing DAG Pipeline with Sample Documents**
+
+### **Step-by-Step Testing Guide**
+
+**Prerequisites:**
+```bash
+# Ensure services are running
+docker compose ps
+
+# Check service health
+curl -X GET "http://localhost:8000/api/v1/health/health"
+# Expected: {"status":"ok"}
+```
+
+**Test 1: PDF Document Analysis (Full DAG)**
+```bash
+# Step 1: Submit PDF for processing
+curl -X POST "http://localhost:8000/api/v1/processing/run" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@sample-invoice.pdf" \
+  -F "pipeline_name=advanced_pdf_analysis_dag"
+
+# Expected Response: {"job_id":"<celery-task-id>"}
+# Save the job_id for status checking
+```
+
+**Test 2: Monitor Processing Status**
+```bash
+# Check initial status (should be "in_progress")
+curl -X GET "http://localhost:8000/api/v1/processing/status/<job_id>"
+
+# Expected: {"status":"in_progress","result":null,"error":null}
+
+# Wait 10-30 seconds for processing, then check again
+curl -X GET "http://localhost:8000/api/v1/processing/status/<job_id>"
+
+# Expected Final Result:
+# {
+#   "status": "success",
+#   "result": {
+#     "job_id": "<correlation-id>",
+#     "status": "success",
+#     "results": [
+#       {"processor_name": "pdf_extraction_processor", "status": "success", ...},
+#       {"processor_name": "ocr_processor", "status": "success", ...},
+#       {"processor_name": "vlm_processor", "status": "success", ...}
+#     ],
+#     "final_output": {
+#       "document_id": "<document-hash>",
+#       "pages": [...],
+#       "document_level_results": {...}
+#     }
+#   },
+#   "error": null
+# }
+```
+
+**Test 3: Verify Log Correlation**
+```bash
+# Check celery worker logs for ID mapping
+docker compose logs celery-worker | grep -E "(celery_task_id|correlation_id)"
+
+# Look for entries like:
+# "celery_task_id": "<job_id>", "correlation_id": "<correlation_id>"
+```
+
+**Expected Processing Timeline:**
+1. **0-2s**: PDF extraction (synchronous) - converts PDF to images
+2. **2-15s**: OCR processing (parallel) - extracts text from images
+3. **2-30s**: VLM analysis (parallel) - AI analysis of images
+4. **30s+**: Result aggregation and completion
+
+**Troubleshooting:**
+- **Status stuck "in_progress"**: Check celery worker logs for errors
+- **"failed" status**: Check error message in response for details
+- **No response**: Verify services are running and accessible
 
 ### Processor Result Contracts
 To complement the new pipeline logic, there should be a formal contract that defines the expected output formats for each type of processor. This will ensure that any new processor developed for the platform will integrate seamlessly into the processing pipeline. For example, a processor that extracts multiple images from a document should return a list of `DocumentPayload` objects.
@@ -407,39 +798,67 @@ In `simple` mode, the pipeline is defined as a linear array of processor steps. 
 
 In `dag` mode, the pipeline is defined as a graph of nodes, enabling both sequential and parallel execution. This is essential for complex workflows and performance optimization.
 
-**Syntax:**
+**Real-World Example: PDF Document Analysis**
+```
+PDF Input → [PDF Extraction] → Images → [OCR + VLM Analysis] → Final Results
+           (synchronous)              (parallel/asynchronous)
+```
+
+**Template: `advanced_pdf_analysis_dag.json`**
 ```json
 {
-  "name": "advanced_pdf_analysis_async",
-  "description": "Asynchronously extracts images from a PDF, then runs OCR and VLM analysis in parallel.",
+  "name": "advanced_pdf_analysis_dag",
+  "description": "Extracts images from PDF, then runs OCR and VLM analysis in parallel.",
   "execution_mode": "dag",
   "pipeline": {
     "nodes": [
       {
         "id": "extract_images",
-        "processor": "pdf_extraction_processor"
+        "processor": "pdf_extraction_processor",
+        "params": {
+          "resolution": 300,
+          "image_format": "PNG"
+        }
       },
       {
         "id": "run_ocr",
         "processor": "ocr_processor",
-        "dependencies": ["extract_images"]
+        "dependencies": ["extract_images"],
+        "params": {
+          "language": "eng",
+          "dpi": 300,
+          "page_segmentation_mode": 3,
+          "ocr_engine_mode": 3
+        }
       },
       {
         "id": "analyze_with_vlm",
         "processor": "vlm_processor",
         "dependencies": ["extract_images"],
         "params": {
-            "prompt": "Describe the structure of this document."
+          "prompt": "give key data in JSON format",
+          "temperature": 0.5,
+          "max_tokens": 1024,
+          "model": "qwen2.5vl:3b"
         }
       }
     ]
   }
 }
 ```
-- `execution_mode`: Must be set to `"dag"`.
-- `pipeline.nodes`: An array of node objects defining the processing steps.
-- `id`: A unique identifier for each node.
-- `dependencies`: An array of node `id`s that must complete before this node can start. Nodes with the same dependency can run in parallel.
+
+**DAG Execution Flow:**
+1. **Level 0**: `extract_images` (pdf_extraction_processor) - Runs first, converts PDF to images
+2. **Level 1**: `run_ocr` + `analyze_with_vlm` - Run in parallel after images are extracted
+3. **Result**: Document-centric output with OCR text and VLM analysis combined
+
+**Key DAG Concepts:**
+- `execution_mode`: Must be set to `"dag"`
+- `pipeline.nodes`: Array of node objects defining processing steps
+- `id`: Unique identifier for each node
+- `dependencies`: Array of node `id`s that must complete before this node starts
+- **Parallel Execution**: Nodes with same dependency run simultaneously
+- **Job Status**: Remains "in_progress" until entire DAG completes
 
 #### Enterprise-Grade DAG Execution
 
@@ -492,9 +911,9 @@ A comprehensive testing strategy will be implemented to ensure the quality and r
 
 
 
-- **Logging**: All services will use structured logging to generate logs that are easy to parse and analyze. All log entries will include a correlation ID to allow for easy tracing of requests across services.
-- **Metrics**: All services will expose a `/metrics` endpoint that provides a wide range of performance and operational metrics in the Prometheus exposition format.
-- **Distributed Tracing**: The application will use OpenTelemetry to generate and propagate distributed traces for all requests. This will allow for easy tracking of requests as they flow through the system.
+- **Enterprise Logging**: All services use the `LoggerRegistry` pattern with hierarchical naming (`api.{component}`, `service.{name}`, `processor.{type}`, `infrastructure.{component}`). All log entries include correlation IDs for distributed tracing and follow structured JSON format for automated analysis.
+- **Metrics**: All services expose a `/metrics` endpoint providing performance and operational metrics in Prometheus exposition format.
+- **Distributed Tracing**: The application uses correlation IDs and structured logging for request tracking across services. Future enhancement will include OpenTelemetry integration.
 
 
 

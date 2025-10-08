@@ -4,6 +4,7 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "run_ocr",
       "name": "ocr_processor",
       "params": {
         "language": "eng",

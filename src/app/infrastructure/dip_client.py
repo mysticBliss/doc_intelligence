@@ -2,6 +2,7 @@ import httpx
 import structlog
 from pybreaker import CircuitBreaker, CircuitBreakerError
 from app.core.config import settings
+from app.core.logging import LoggerRegistry
 from app.domain.models import (
     DIPRequest,
     DIPResponse,
@@ -11,7 +12,7 @@ from app.domain.models import (
 from app.domain.ports import DIPClientPort
 from fastapi_cache.decorator import cache
 
-logger = structlog.get_logger(__name__)
+logger = LoggerRegistry.get_infrastructure_logger("dip_client")
 
 # Define a circuit breaker for the DIP service
 # Fail after 3 consecutive failures, and stay open for 60 seconds

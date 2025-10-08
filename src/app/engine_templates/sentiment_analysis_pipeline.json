@@ -4,13 +4,16 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "run_ocr",
       "name": "ocr_processor",
       "params": {
         "language": "eng"
       }
     },
     {
+      "id": "analyze_sentiment",
       "name": "sentiment_analyzer",
+      "dependencies": ["run_ocr"],
       "params": {}
     }
   ]

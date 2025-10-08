@@ -1,6 +1,6 @@
 import time
 import structlog
-from typing import Any, Dict
+from typing import Any, Dict, Set
 
 import structlog
 
@@ -14,19 +14,24 @@ class SentimentAnalyzerProcessor(BaseProcessor):
 
     def __init__(self, config: Dict[str, Any], logger: structlog.stdlib.BoundLogger):
         super().__init__(config, logger)
+        self.positive_words: Set[str] = set(self.config.get("positive_words", {"good", "great", "excellent", "positive", "awesome"}))
+        self.negative_words: Set[str] = set(self.config.get("negative_words", {"bad", "poor", "terrible", "negative", "awful"}))
 
     @instrument_step
     async def process(self, *, payload: DocumentPayload, **kwargs: Any) -> ProcessorResult:
-        # Dummy implementation
-        positive_words = {"good", "great", "excellent", "positive", "awesome"}
-        negative_words = {"bad", "poor", "terrible", "negative", "awful"}
+        if not payload.text_content:
+            return ProcessorResult(
+                processor_name=self.name,
+                status="failure",
+                error="Text content is required for sentiment analysis.",
+            )
 
-        words = text.lower().split()
+        words = payload.text_content.lower().split()
         score = 0
         for word in words:
-            if word in positive_words:
+            if word in self.positive_words:
                 score += 1
-            elif word in negative_words:
+            elif word in self.negative_words:
                 score -= 1
 
         if score > 0:
@@ -38,6 +43,6 @@ class SentimentAnalyzerProcessor(BaseProcessor):
 
         return ProcessorResult(
             processor_name=self.name,
-            success=True,
-            result_data={"sentiment": sentiment, "score": score},
+            status="success",
+            results={"sentiment": sentiment, "score": score},
         )

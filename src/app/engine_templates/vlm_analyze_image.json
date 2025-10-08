@@ -4,9 +4,13 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "analyze_with_vlm",
       "name": "vlm_processor",
       "params": {
-        "prompt": "Describe this image in detail."
+        "prompt": "Get Key data in JSON format from this image.",
+        "model": "qwen2.5vl:3b",
+        "temperature": 0.2,
+        "max_tokens": 1024
       }
     }
   ]

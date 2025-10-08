@@ -2,9 +2,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
 import structlog
-from pydantic import BaseModel
 
-from app.processing.payloads import ProcessorResult
+from app.processing.payloads import DocumentPayload, ProcessorResult
 
 
 class BaseProcessor(ABC):
@@ -19,6 +18,9 @@ class BaseProcessor(ABC):
     def __init__(self, config: Dict[str, Any], logger: structlog.stdlib.BoundLogger):
         self.config = config
         self.logger = logger.bind(processor_name=self.name)
+        # Context attributes to be set by the `execute` method
+        self.page_number: Optional[int] = None
+        self.parent_document_id: Optional[str] = None
 
     @property
     @abstractmethod
@@ -26,14 +28,26 @@ class BaseProcessor(ABC):
         """The unique name of the processor."""
         pass
 
-    @abstractmethod
-    async def process(self, *, logger: structlog.stdlib.BoundLogger, **kwargs: Any) -> ProcessorResult:
+    async def execute(self, payload: DocumentPayload, *, logger: structlog.stdlib.BoundLogger) -> ProcessorResult:
         """
-        Processes the document or data.
+        Executes the processor with context, called by the pipeline.
+        This method sets the page-level context before calling the `process` method.
+        """
+        # Set the context for the decorator to use
+        self.page_number = payload.page_number
+        self.parent_document_id = payload.parent_document_id
+        
+        # The actual processing is now wrapped and called here
+        return await self.process(payload, logger=logger)
+
+    @abstractmethod
+    async def process(self, payload: DocumentPayload, *, logger: structlog.stdlib.BoundLogger) -> ProcessorResult:
+        """
+        Processes the document or data. This method is implemented by each concrete processor.
 
         Args:
+            payload: The DocumentPayload containing the data to process.
             logger: A bound structlog logger for structured, contextual logging.
-            **kwargs: The data to be processed, which may vary by processor.
 
         Returns:
             A ProcessorResult containing the outcome and any relevant data.

@@ -4,6 +4,7 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "preprocess_image",
       "name": "image_preprocessing_processor",
       "params": {
         "steps": [

@@ -1,7 +1,7 @@
 from typing import Dict, Type
 
-import structlog
-
+from app.core.config import settings
+from app.core.logging import LoggerRegistry
 from app.processing.processors.base import BaseProcessor
 from app.processing.processors.document_classifier_processor import DocumentClassifierProcessor
 from app.processing.processors.image_preprocessing_processor import ImagePreprocessingProcessor
@@ -9,8 +9,6 @@ from app.processing.processors.ocr_processor import OcrProcessor
 from app.processing.processors.pdf_image_extraction_processor import PDFImageExtractionProcessor
 from app.processing.processors.vlm_processor import VlmProcessor
 from app.processing.processors.enhanced_pdf_processor import EnhancedPdfProcessor
-
-
 from app.processing.processors.sentiment_analyzer_processor import SentimentAnalyzerProcessor
 
 
@@ -52,9 +50,12 @@ class ProcessorFactory:
                 f"Available processors: {list(self._processor_registry.keys())}"
             )
 
-        logger = structlog.get_logger(processor_name)
+        logger = LoggerRegistry.get_processor_logger(processor_name)
 
         if processor_name == "enhanced_pdf_processor":
             return processor_class(config=config, factory=self, logger=logger)
+
+        if processor_name == "vlm_processor":
+            return processor_class(config=config, ollama_base_url=settings.OLLAMA_API_BASE_URL, logger=logger)
 
         return processor_class(config=config, logger=logger)

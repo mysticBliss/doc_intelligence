@@ -1,11 +1,14 @@
 import asyncio
 import time
+import uuid
 from typing import Any, Coroutine, Dict, List, Optional, Union
 
 import structlog
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.schemas.base import BaseProcessorConfig
+from app.api.v1.schemas.schemas import DocumentProcessingResult, JobStatus
+from app.core.logging import LoggerRegistry
 from app.processing.factory import ProcessorFactory
 from app.processing.processors.base import BaseProcessor, ProcessorResult
 from app.processing.payloads import DocumentPayload
@@ -47,234 +50,326 @@ class ProcessingPipeline:
         """
         self.config = PipelineConfig.model_validate(config)
         self.factory = factory
-        self.logger = structlog.get_logger(self.__class__.__name__)
+        self.logger = LoggerRegistry.get_pipeline_logger()
 
-    async def run(self, payload: DocumentPayload, logger: Optional[structlog.stdlib.BoundLogger] = None) -> List[ProcessorResult]:
+    async def run(self, payload: DocumentPayload, logger: Optional[structlog.stdlib.BoundLogger] = None) -> DocumentProcessingResult:
         """
-        Executes the pipeline based on the validated configuration.
-
-        Args:
-            **kwargs: Initial arguments for the pipeline.
-
-        Returns:
-            A list of ProcessorResult objects from all processors.
+        Executes the pipeline and returns a structured, document-centric result.
         """
         log = logger or self.logger
-        log = log.bind(pipeline_id=str(time.time()))
+        # Use the payload's document_id if it exists, otherwise generate one.
+        # This ensures the root document has a stable ID.
+        if not payload.document_id:
+            payload.document_id = f"doc_{uuid.uuid4()}"
+        log = log.bind(pipeline_id=str(time.time()), document_id=payload.document_id)
+
         log.info("pipeline.start", config=self.config.model_dump())
         start_time = time.perf_counter()
 
-        if self.config.execution_mode == "simple":
-            results = await self._run_linear(log, payload)
-        elif self.config.execution_mode == "dag":
-            results = await self._run_dag(log, payload)
-        else:
-            # This case should be prevented by Pydantic validation
-            raise ValueError(f"Invalid execution_mode: {self.config.execution_mode}")
+        final_result = DocumentProcessingResult(
+            job_id=payload.job_id,
+            status=JobStatus.IN_PROGRESS,
+            results=[],
+            final_output=None
+        )
+
+        try:
+            if self.config.execution_mode == "simple":
+                all_step_results = await self._run_linear(log, payload)
+            elif self.config.execution_mode == "dag":
+                all_step_results = await self._run_dag(log, payload)
+            else:
+                raise ValueError(f"Invalid execution_mode: {self.config.execution_mode}")
+
+            final_result.results = [r.model_dump() for r in all_step_results]
+            final_result.final_output = self._aggregate_results(log, all_step_results, payload.document_id)
+            final_result.status = JobStatus.SUCCESS
+
+        except Exception as e:
+            log.error("pipeline.run.failed", error=str(e), exc_info=True)
+            final_result.status = JobStatus.FAILURE
+            final_result.error_message = f"Pipeline execution failed: {str(e)}"
 
         duration_ms = round((time.perf_counter() - start_time) * 1000)
-        log.info("pipeline.finished", duration_ms=duration_ms)
-        return results
+        log.info("pipeline.finished", duration_ms=duration_ms, final_status=final_result.status.value)
+
+        return final_result
+
+    def _aggregate_results(
+        self,
+        logger: structlog.stdlib.BoundLogger,
+        all_results: List[ProcessorResult],
+        parent_document_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Aggregates a flat list of ProcessorResult objects into a structured,
+        document-centric dictionary, grouping results by page.
+        """
+        logger.info("pipeline.aggregate.start", result_count=len(all_results))
+
+        # The final output structure
+        aggregated_output = {
+            "document_id": parent_document_id,
+            "status": "success",  # Assume success unless a failure result is found
+            "pages": [],
+            "document_level_results": {}
+        }
+        pages_map: Dict[int, Dict[str, Any]] = {}
+
+        for result in all_results:
+            # Check for the special orchestrator failure message
+            if result.processor_name == "pipeline_orchestrator" and result.status == "failure":
+                aggregated_output["status"] = "failure"
+                aggregated_output["error_message"] = result.error_message
+                # Continue processing other results, but the final status is now failure
+
+            if result.status != "success":
+                continue  # Skip failed steps in aggregation
+
+            page_num = result.metadata.get("page_number")
+            processor_name = result.processor_name.replace("_processor", "") # Clean name for key
+
+            if page_num is not None:
+                # This result belongs to a specific page
+                if page_num not in pages_map:
+                    pages_map[page_num] = {"page_number": page_num}
+                
+                # Add the structured result to the page, keyed by processor name
+                if result.structured_results:
+                    pages_map[page_num][f"{processor_name}_result"] = result.structured_results
+            else:
+                # This is a document-level result (e.g., the PDF extractor's summary)
+                if result.structured_results:
+                     aggregated_output["document_level_results"][f"{processor_name}_result"] = result.structured_results
+
+
+        # Convert the map of pages to a sorted list
+        sorted_pages = sorted(pages_map.values(), key=lambda p: p["page_number"])
+        aggregated_output["pages"] = sorted_pages
+
+        logger.info("pipeline.aggregate.finished", page_count=len(sorted_pages))
+        return aggregated_output
 
     async def _run_linear(
-        self, logger: structlog.stdlib.BoundLogger, payload: DocumentPayload
+        self, logger: structlog.stdlib.BoundLogger, initial_payload: DocumentPayload
     ) -> List[ProcessorResult]:
-        """Executes a simple linear pipeline."""
-        pipeline_results: List[ProcessorResult] = []
-        current_payloads = [payload]
+        """Executes a linear pipeline, supporting fan-out for page-based processing."""
+        # Payloads are stored in a dictionary keyed by a unique identifier (e.g., page number)
+        # For single documents, the key can be a default value like 0.
+        payloads_to_process: Dict[Union[int, str], DocumentPayload] = {0: initial_payload}
+        all_results: List[ProcessorResult] = []
+        semaphore = asyncio.Semaphore(self.config.max_concurrency)
 
         for i, p_config in enumerate(self.config.pipeline):
             processor = self.factory.create_processor(p_config["name"], p_config.get("params", {}))
-            next_payloads = []
-            has_next_payloads = False
+            logger.info("pipeline.step.start", step=i, processor=processor.name, input_payload_count=len(payloads_to_process))
 
-            for p_idx, current_payload in enumerate(current_payloads):
-                result = await self._execute_step(logger, f"{i}_{p_idx}", processor, {"payload": current_payload, **p_config.get("params", {})})
-                pipeline_results.append(result)
+            tasks = []
+            for payload_key, payload in payloads_to_process.items():
+                # The key helps correlate results back to the specific payload (page)
+                tasks.append(self._execute_step(logger, f"{i}_{payload_key}", processor, payload, semaphore))
 
+            step_results: List[ProcessorResult] = await asyncio.gather(*tasks)
+            all_results.extend(step_results)
+
+            next_payloads: Dict[Union[int, str], DocumentPayload] = {}
+            fan_out_detected = False
+
+            for result in step_results:
                 if result.status != "success":
-                    logger.error("pipeline.linear.failed", step=i, processor_name=processor.name)
-                    # Stop processing this branch of the pipeline
-                    continue
+                    logger.warning("pipeline.step.failed", processor=result.processor_name, error=result.error_message)
+                    continue  # This branch of processing stops
 
-                # Handle different types of results to create the next set of payloads
-                if result.results:
-                    initial_len = len(next_payloads)
-                    if isinstance(result.results, list) and all(isinstance(item, DocumentPayload) for item in result.results):
-                        next_payloads.extend(result.results)
-                    elif isinstance(result.results, dict) and 'images' in result.results and isinstance(result.results['images'], list):
-                        for img_b64 in result.results['images']:
-                            next_payloads.append(DocumentPayload(image_data=img_b64))
-                    elif isinstance(result.results, dict):
-                        try:
-                            next_payloads.append(DocumentPayload(**result.results))
-                        except Exception:
-                            logger.warning("Could not create DocumentPayload from result dict", step=i, result=result.results)
-                    else:
-                        logger.warning("Unhandled result type", step=i, result_type=type(result.results))
-                    if len(next_payloads) > initial_len:
-                        has_next_payloads = True
+                # Check for the fan-out contract
+                if (
+                    result.structured_results
+                    and isinstance(result.structured_results.get("document_payloads"), list)
+                ):
+                    fan_out_detected = True
+                    # A processor (like PDF extractor) has fanned out.
+                    # The subsequent steps will run on these new payloads.
+                    for new_payload in result.structured_results["document_payloads"]:
+                        # The key is now the page number, ensuring unique processing paths.
+                        if new_payload.page_number is not None:
+                            next_payloads[new_payload.page_number] = new_payload
+                        else:
+                            # Fallback for non-paginated fan-out
+                            next_payloads[str(uuid.uuid4())] = new_payload
+                    break  # Exit the loop, as we are now in a new processing context
 
-            current_payloads = next_payloads
-            if not current_payloads:
-                if has_next_payloads:
-                    logger.info("Pipeline terminated: last step produced results but no subsequent steps are defined.", step=i)
+            if fan_out_detected:
+                payloads_to_process = next_payloads
+            elif i + 1 < len(self.config.pipeline):
+                # For non-fan-out steps, we expect a 1:1 mapping between input payloads and results.
+                # The result of the current step becomes the input for the next.
+                if len(step_results) == len(payloads_to_process):
+                    # Create new payloads from the results of the current step
+                    payloads_to_process = {
+                        key: DocumentPayload(
+                            image_data=res.structured_results.get("image_data") if res.structured_results else None,
+                            parent_document_id=payloads_to_process[key].parent_document_id,
+                            page_number=res.metadata.get("page_number"),
+                            results=payloads_to_process[key].results + [res.dict()]
+                        )
+                        for (key, res) in zip(payloads_to_process.keys(), step_results)
+                        if res.status == "success" and (res.structured_results and res.structured_results.get("image_data"))
+                    }
                 else:
-                    logger.info("Pipeline branch terminated due to no further payloads.", step=i)
+                    logger.warning("pipeline.step.mismatch", reason="Mismatch between payload and result count in linear flow.", expected=len(payloads_to_process), got=len(step_results))
+                    payloads_to_process = {}
+
+            if not payloads_to_process:
+                logger.info("pipeline.terminated", reason="No further payloads to process.", last_step=i)
                 break
 
-        return pipeline_results
+        return all_results
+
+    async def _execute_step(
+        self, logger: structlog.stdlib.BoundLogger, step_id: str, processor: BaseProcessor, payload: DocumentPayload, semaphore: asyncio.Semaphore
+    ) -> ProcessorResult:
+        """Wrapper to execute a single processor step, with semaphore for concurrency control."""
+        async with semaphore:
+            logger.info("step.execute.start", step_id=step_id, processor=processor.name)
+            try:
+                # Pass the logger to the process method if the processor accepts it
+                result = await processor.execute(payload, logger=logger)
+                logger.info(
+                    "step.execute.success",
+                    step_id=step_id,
+                    processor=processor.name,
+                    status=result.status,
+                    # Log the high-level structure of the result, avoiding large data blobs
+                    result_summary={
+                        "has_structured_results": bool(result.structured_results),
+                        "has_image_data": "image_data" in (result.structured_results or {}),
+                        "has_payloads": "document_payloads" in (result.structured_results or {}),
+                    },
+                )
+                return result
+            except Exception as e:
+                logger.error("step.execute.unhandled_exception", step_id=step_id, processor=processor.name, error=str(e), exc_info=True)
+                return ProcessorResult(
+                    processor_name=processor.name,
+                    status="failure",
+                    error_message=f"Unhandled exception in {processor.name}: {str(e)}"
+                )
+
 
     async def _run_dag(self, logger: Any, payload: DocumentPayload) -> List[ProcessorResult]:
         """Executes a DAG-based pipeline with parallel execution for independent steps."""
         step_results: Dict[str, List[ProcessorResult]] = {}
         execution_levels = self._get_dag_execution_order()
 
+        if not execution_levels:
+            self.logger.warning("DAG execution order is empty. No steps will be executed.")
+            return []
+
         semaphore = asyncio.Semaphore(self.config.max_concurrency)
-        nodes_by_id = {node['id']: node for node in self.config.pipeline['nodes']}
+        
+        pipeline_nodes = self.config.pipeline.get('nodes', [])
+        if not isinstance(pipeline_nodes, list):
+            self.logger.error("Invalid pipeline format: 'nodes' must be a list.", pipeline_config=self.config.pipeline)
+            return []
+
+        nodes_by_id = {node['id']: node for node in pipeline_nodes}
+        payloads_by_step: Dict[str, List[DocumentPayload]] = {"_initial_": [payload]}
+        
+        executed_steps = set()
 
         for level, steps_in_level in enumerate(execution_levels):
             tasks: List[Coroutine] = []
-            task_step_map: List[Dict[str, Any]] = []
+            task_to_context_map: List[tuple[str, DocumentPayload]] = []
 
-            for step_name in steps_in_level:
-                step_config = nodes_by_id[step_name]
+            for step_id in steps_in_level:
+                step_config = nodes_by_id.get(step_id)
+                if not step_config:
+                    self.logger.error("Configuration for step not found in 'nodes'.", step_id=step_id)
+                    continue
+
+                executed_steps.add(step_id)
+
+                # Determine input payloads for this step
+                input_payloads: List[DocumentPayload] = []
+                dependencies = step_config.get("dependencies", [])
+                if not dependencies:
+                    # Root node, uses the initial payload
+                    input_payloads = payloads_by_step["_initial_"]
+                else:
+                    # Collect payloads from all parent steps
+                    for dep_id in dependencies:
+                        if dep_id in payloads_by_step:
+                            input_payloads.extend(payloads_by_step[dep_id])
+
+                if not input_payloads:
+                    self.logger.warning("No input payloads for step. Skipping.", step_id=step_id)
+                    continue
+                
                 processor = self.factory.create_processor(step_config["processor"], step_config.get("params", {}))
 
-                dependency_payloads: List[DocumentPayload] = []
-                dependencies_failed = False
-
-                if not step_config.get("dependencies"):
-                    # This is a root node, use the initial payload
-                    dependency_payloads.append(payload)
-                else:
-                    # This is a subsequent node, gather payloads from dependencies
-                    for dep_name in step_config.get("dependencies", []):
-                        dep_results_list = step_results.get(dep_name)
-                        if not dep_results_list:
-                            logger.error("pipeline.dag.dependency_missing", step=step_name, dependency=dep_name)
-                            dependencies_failed = True
-                            break
-
-                        for dep_result in dep_results_list:
-                            if dep_result.status != "success":
-                                logger.warning("pipeline.dag.dependency_failed", step=step_name, dependency=dep_name)
-                                dependencies_failed = True
-                                break
-                            
-                            if isinstance(dep_result.results, dict) and 'images' in dep_result.results:
-                                for img_b64 in dep_result.results['images']:
-                                    dependency_payloads.append(DocumentPayload(image_data=img_b64))
-                            elif isinstance(dep_result.results, list) and all(isinstance(r, DocumentPayload) for r in dep_result.results):
-                                dependency_payloads.extend(dep_result.results)
-                            elif isinstance(dep_result.results, dict):
-                                try:
-                                    dependency_payloads.append(DocumentPayload(**dep_result.results))
-                                except Exception:
-                                    logger.warning("Could not create DocumentPayload from dependency result dict", step=step_name, dep_result=dep_result.results)
-
-                        if dependencies_failed:
-                            break
-                
-                if dependencies_failed:
-                    step_results[step_name] = [ProcessorResult(
-                        processor_name=processor.name,
-                        status="skipped",
-                        error_message=f"Skipped due to failed dependencies."
-                    )]
-                    continue
-
-                if not dependency_payloads:
-                    logger.warning("pipeline.dag.no_payloads_for_step", step=step_name)
-                    continue
-
-                # Execute the step for each payload
-                for i, payload_obj in enumerate(dependency_payloads):
-                    step_args = {"payload": payload_obj, **step_config.get("params", {})}
-                    task = self._execute_step(logger, f"{step_name}_{i}", processor, step_args, semaphore)
-                    tasks.append(task)
-                    task_step_map.append({"name": step_name, "processor": processor.name})
+                # Create a task for each payload
+                for i, p in enumerate(input_payloads):
+                    task_id = f"{step_id}_{i}"
+                    tasks.append(self._execute_step(logger, task_id, processor, p, semaphore))
+                    task_to_context_map.append((step_id, p))
 
             if not tasks:
                 continue
 
             level_results = await asyncio.gather(*tasks)
 
-            for result, step_info in zip(level_results, task_step_map):
-                step_name = step_info["name"]
-                if step_name not in step_results:
-                    step_results[step_name] = []
-                step_results[step_name].append(result)
+            # Process results and prepare payloads for the next level
+            for result, (step_id, original_payload) in zip(level_results, task_to_context_map):
+                if step_id not in step_results:
+                    step_results[step_id] = []
+                step_results[step_id].append(result)
 
-        # Aggregate results for the final output
-        final_results: List[ProcessorResult] = []
-        for step_name, results_list in step_results.items():
-            if not results_list:
-                continue
+                if result.status != "success":
+                    logger.warning("DAG step failed.", processor=result.processor_name, error=result.error_message)
+                    continue
 
-            if len(results_list) == 1:
-                final_results.append(results_list[0])
-            else:
-                # Aggregate multiple results for a single step (fan-in)
-                aggregated_results_content = []
-                final_status = "success"
-                error_messages = []
-                
-                for res in results_list:
-                    if res.status != "success":
-                        final_status = "failure"
-                        if res.error_message:
-                            error_messages.append(res.error_message)
-                    if res.results:
-                        aggregated_results_content.append(res.results)
-                
-                # Create a single representative result for the step
-                final_results.append(ProcessorResult(
-                    processor_name=results_list[0].processor_name,
-                    status=final_status,
-                    results={"aggregated_results": aggregated_results_content},
-                    error_message=" | ".join(error_messages) if error_messages else None
-                ))
-                
-        return final_results
+                # Initialize the list for the current step if it doesn't exist
+                if step_id not in payloads_by_step:
+                    payloads_by_step[step_id] = []
 
-    async def _execute_step(
-        self,
-        logger: structlog.stdlib.BoundLogger,
-        step_id: Union[int, str],
-        processor: BaseProcessor,
-        args: Dict[str, Any],
-        semaphore: Optional[asyncio.Semaphore] = None,
-    ) -> ProcessorResult:
-        """Executes a single processor step, acquiring a semaphore if provided, and handles exceptions."""
-        async def process_func() -> ProcessorResult:
-            logger.info(
-                "pipeline.step.start",
-                step=step_id,
-                processor_name=processor.name,
+                # Check for fan-out (e.g., PDF extractor)
+                if result.structured_results and isinstance(result.structured_results.get("document_payloads"), list):
+                    payloads_by_step[step_id].extend(result.structured_results["document_payloads"])
+                # Check for single image output (e.g., image preprocessor)
+                elif result.structured_results and result.structured_results.get("image_data"):
+                    # Create a new payload for the next step, ensuring context is carried over
+                    new_payload = DocumentPayload(
+                        image_data=result.structured_results.get("image_data"),
+                        # Explicitly carry over page context from the original payload
+                        parent_document_id=original_payload.parent_document_id,
+                        page_number=original_payload.page_number,
+                        # Append the current result to the history from the original payload
+                        results=original_payload.results + [result.dict()]
+                    )
+                    payloads_by_step[step_id].append(new_payload)
+        
+        all_results: List[ProcessorResult] = []
+        for step_id in executed_steps:
+            if step_id in step_results:
+                all_results.extend(step_results[step_id])
+
+        logger.info("DAG final validation", 
+                    executed_steps=list(executed_steps), 
+                    all_nodes=list(nodes_by_id.keys()))
+
+        # Final validation
+        if len(executed_steps) != len(nodes_by_id):
+            logger.error("Pipeline did not complete successfully. Some steps were not executed.",
+                         executed_steps=list(executed_steps), total_steps=len(nodes_by_id))
+            # Create a final failure result to ensure the pipeline status is correctly reported
+            failure_result = ProcessorResult(
+                processor_name="pipeline_orchestrator",
+                status="failure",
+                error_message="DAG execution incomplete: Not all nodes were executed.",
+                metadata={"executed_steps": list(executed_steps), "total_steps": len(nodes_by_id)}
             )
-            try:
-                result = await processor.process(**args)
-                return result
-            except Exception as e:
-                logger.error(
-                    "pipeline.step.exception",
-                    step=step_id,
-                    processor_name=processor.name,
-                    error=str(e),
-                    exc_info=True,
-                )
-                return ProcessorResult(
-                    processor_name=processor.name,
-                    status="failure",
-                    error_message=f"An unexpected error occurred: {str(e)}",
-                )
+            all_results.append(failure_result)
 
-        if semaphore:
-            async with semaphore:
-                return await process_func()
-        else:
-            return await process_func()
+        return all_results
 
     def _get_dag_execution_order(self) -> List[List[str]]:
         """

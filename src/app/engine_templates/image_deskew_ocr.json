@@ -4,6 +4,7 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "deskew_image",
       "name": "image_preprocessing_processor",
       "params": {
         "steps": [
@@ -14,7 +15,9 @@
       }
     },
     {
+      "id": "run_ocr",
       "name": "ocr_processor",
+      "dependencies": ["deskew_image"],
       "params": {
         "language": "eng"
       }

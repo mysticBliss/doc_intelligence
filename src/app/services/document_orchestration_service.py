@@ -1,9 +1,9 @@
-import asyncio
 import base64
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 import structlog
-from app.domain.models import DocumentProcessingResult
-from app.core.logging import get_logger
+import time
+from app.api.v1.schemas.schemas import DocumentProcessingResult
+from app.core.logging import LoggerRegistry
 from app.domain.ports.storage import StoragePort
 import hashlib
 from io import BytesIO
@@ -37,7 +37,7 @@ class DocumentOrchestrationService:
         """
         self.storage_port = storage_port
         self.factory = factory
-        self.logger = logger or get_logger(__name__)
+        self.logger = logger or LoggerRegistry.get_service_logger("orchestration")
 
     async def process_document(
         self,
@@ -67,6 +67,7 @@ class DocumentOrchestrationService:
             A `DocumentProcessingResult` object containing the outcomes of each
             processing step.
         """
+        start_time = time.time()
         log = self.logger.bind(
             correlation_id=correlation_id,
             pipeline_config=pipeline_config,
@@ -84,30 +85,32 @@ class DocumentOrchestrationService:
         except Exception as e:
             log.exception("Failed to save file to storage")
             return DocumentProcessingResult(
-                results=[],
-                error=f"Failed to save file to storage: {e}",
+                results={},
                 correlation_id=correlation_id,
             )
 
 
 
         pipeline = ProcessingPipeline(pipeline_config, self.factory)
-        initial_payload = DocumentPayload(image_data=base64.b64encode(file_data).decode('utf-8'))
+        initial_payload = DocumentPayload(
+            file_content=file_data, 
+            file_name=file_name,
+            document_id=document_id,
+            job_id=correlation_id  # Pass the correlation_id as the job_id
+        )
 
-        try:
-            log.info("Starting pipeline execution...")
-            final_payload = await pipeline.run(initial_payload, logger=log)
-            log.info("Pipeline execution finished.")
-            log.info("Document processing orchestration finished successfully.")
+        log.info("Starting pipeline execution...")
+        final_result = await pipeline.run(initial_payload, logger=log)
+        log.info("Pipeline execution finished.", status=final_result.status.value)
 
-            return DocumentProcessingResult(
-                results=final_payload,
-                correlation_id=correlation_id
-            )
-        except Exception as e:
-            log.exception("An unhandled exception occurred during pipeline execution.")
-            return DocumentProcessingResult(
-                results=[],
-                error=f"An unexpected error occurred during pipeline execution: {e}",
-                correlation_id=correlation_id,
-            )
+        final_status = final_result.status.value
+        self.logger.info(
+            "Pipeline execution finished",
+            correlation_id=correlation_id,
+            pipeline_name=pipeline_config.get("name", "unknown"),
+            document_id=document_id,
+            duration_ms=(time.time() - start_time) * 1000,
+            final_status=final_status,
+        )
+
+        return final_result

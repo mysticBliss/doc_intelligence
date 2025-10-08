@@ -4,6 +4,7 @@
   "execution_mode": "simple",
   "pipeline": [
     {
+      "id": "extract_images",
       "name": "pdf_extraction_processor",
       "params": {
         "resolution": 300,
@@ -11,7 +12,9 @@
       }
     },
     {
+      "id": "run_ocr",
       "name": "ocr_processor",
+      "dependencies": ["extract_images"],
       "params": {
         "language": "eng"
       }

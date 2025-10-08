@@ -25,9 +25,10 @@
         "processor": "vlm_processor",
         "dependencies": ["extract_images"],
         "params": {
-          "prompt": "Describe the structure of this document.",
+          "prompt": "give key data in JSON format",
           "temperature": 0.5,
-          "max_tokens": 512
+          "max_tokens": 1024,
+          "model": "qwen2.5vl:3b"
         }
       }
     ]

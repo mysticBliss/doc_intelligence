@@ -1,16 +1,13 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Union
 from enum import Enum
-from pydantic import BaseModel, Field
+
 
 from app.core.schemas.base import BaseProcessorConfig
-from app.processing.processors.base import ProcessorResult
+from app.core.schemas.enums import JobStatus
 
 
-class PipelineTemplate(BaseModel):
-    """A template for a preprocessing pipeline."""
-    name: str = Field(..., description="The name of the pipeline template.")
-    steps: List[str] = Field(..., description="The sequence of preprocessing steps.")
+
 
 
 class BoundingBox(BaseModel):
@@ -25,22 +22,6 @@ class AnnotatedImage(BaseModel):
     """Represents an image with optional bounding box annotations."""
     image_data: str  # b64 encoded
     annotations: List[BoundingBox] = []
-
-
-class StepMetadata(BaseModel):
-    """Metadata captured for a single preprocessing step."""
-    input_hash: str = Field(..., description="MD5 hash of the input image.")
-    output_hash: str = Field(..., description="MD5 hash of the output image.")
-    processing_time_ms: float = Field(..., description="Time taken for the step in milliseconds.")
-    parameters: Dict[str, Any] = Field({}, description="Parameters used for the step.")
-
-
-class ProcessingStepResult(BaseModel):
-    """Represents the result of a single preprocessing step, including metadata."""
-    step_name: str
-    input_image: str  # b64 encoded
-    output_image: str  # b64 encoded
-    metadata: StepMetadata
 
 
 class DIPRequest(BaseModel):
@@ -58,7 +39,6 @@ class DIPResponse(BaseModel):
     done: bool
     request_context: Optional["RequestContext"] = None
     # The outer list corresponds to pages, the inner list to processing steps for that page.
-    processing_results: Optional[List[List[ProcessingStepResult]]] = None
     document_id: Optional[str] = None
 
 
@@ -134,61 +114,11 @@ class ChatRequest(BaseModel):
 
 
 
-class JobStatus(str, Enum):
-    """Enum for job status."""
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
 
 
 
 
 
-class DocumentProcessingRequest(BaseModel):
-    image_base64: str
-    processors: List[str]
-    document_id: Optional[str] = None
-    preprocessing_steps: List[str] = []
-    prompt: Optional[str] = None
-
-
-class DocumentProcessingResult(BaseModel):
-    """
-    Aggregates the results from all processors in a single workflow.
-
-    This model serves as the comprehensive output of the
-    `DocumentOrchestrationService`. It contains the full list of processor
-    results and a correlation ID, enabling end-to-end traceability of the
-    entire processing request.
-    """
-    results: List[ProcessorResult]
-    correlation_id: str
-
-
-class DocumentProcessingResponse(BaseModel):
-    """
-    Defines the final API response structure for a document processing request.
-
-    This model is the public data contract for the `/documents/process`
-    endpoint. It presents the processing results and correlation ID in a
-    clear, client-friendly format, abstracting away the internal
-    implementation details of the orchestration service.
-    """
-    results: List[ProcessorResult]
-    correlation_id: str
-
-class JobCreationResponse(BaseModel):
-    """Response for a job creation request."""
-    job_id: str
-
-
-
-
-class JobStatusResponse(BaseModel):
-    """Response for a job status request."""
-    status: JobStatus
-    result: Optional[DocumentProcessingResponse] = None
-    error: Optional[str] = None
 
 
 class VLMResponse(BaseModel):

@@ -91,8 +91,9 @@ services:
       dockerfile: api.Dockerfile
 
     command: celery -A app.tasks.celery_app.celery worker -l info -P gevent -c 4
+    working_dir: /app
     volumes:
-      - ./src:/app/src
+      - .:/app
     env_file:
       - .env
     environment:
@@ -113,8 +114,9 @@ services:
       context: .
       dockerfile: api.Dockerfile
     command: celery -A app.tasks.celery_app.celery beat -l info
+    working_dir: /app
     volumes:
-      - ./src:/app/src
+      - .:/app
     env_file:
       - .env
     environment:

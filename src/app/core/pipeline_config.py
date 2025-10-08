@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Dict, List, Any
 
 from app.core.config import settings
-import structlog
+from app.core.logging import LoggerRegistry
 
-logger = structlog.get_logger(__name__)
+logger = LoggerRegistry.get_service_logger("pipeline_config")
 
 class PipelineConfig:
     """

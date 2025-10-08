@@ -2,53 +2,39 @@ import base64
 import httpx
 from app.processing.decorators import instrument_step
 from app.processing.payloads import DocumentPayload, ProcessorResult
-from app.processing.processors.base import BaseProcessor, ProcessorResult
-from typing import Any, Dict
+from app.processing.processors.base import BaseProcessor
+from typing import Any, Dict, Optional
 import structlog
 
 
 class VlmProcessor(BaseProcessor):
     name = "vlm_processor"
 
-    def __init__(self, config: Dict[str, Any], logger: structlog.stdlib.BoundLogger):
+    def __init__(self, config: Dict[str, Any], ollama_base_url: str, logger: structlog.stdlib.BoundLogger):
         super().__init__(config, logger)
+        self.ollama_base_url = ollama_base_url
         self.validate_config()
-        self._check_ollama_health()
-
-    def _check_ollama_health(self):
-        ollama_base_url = self.config.get("ollama_base_url", "http://ollama:11434")
-        try:
-            httpx.get(f"{ollama_base_url}/api/tags")
-            self.logger.info("Ollama service is healthy.")
-        except httpx.RequestError as e:
-            self.logger.error("Ollama service is unreachable.", error=str(e))
-            raise RuntimeError("Ollama service is unreachable.") from e
 
     def validate_config(self):
-        if "model" not in self.config:
-            self.config["model"] = "qwen2.5vl:3b"
-        if "temperature" not in self.config:
-            self.config["temperature"] = 0.7
-        if "max_tokens" not in self.config:
-            self.config["max_tokens"] = 1024
+        required_params = ["prompt", "model", "temperature", "max_tokens"]
+        for param in required_params:
+            if param not in self.config:
+                raise ValueError(f"'{param}' is a required configuration parameter for VlmProcessor.")
 
     @instrument_step
-    async def process(self, *, payload: DocumentPayload, **kwargs: Any) -> ProcessorResult:
+    async def process(self, payload: DocumentPayload, *, logger: structlog.stdlib.BoundLogger) -> ProcessorResult:
         """Analyzes the image with a VLM and returns the structured response."""
-        prompt = self.config.get("prompt", "What is in this image?")
-        ollama_base_url = self.config.get("ollama_base_url", "http://ollama:11434")
-        model = self.config.get("model")
-        temperature = self.config.get("temperature")
-        max_tokens = self.config.get("max_tokens")
+        prompt = self.config["prompt"]
+        model = self.config["model"]
+        temperature = self.config["temperature"]
+        max_tokens = self.config["max_tokens"]
 
-        if isinstance(payload.image_data, bytes):
-            image_b64 = base64.b64encode(payload.image_data).decode("utf-8")
-        else:
-            image_b64 = payload.image_data
+        image_bytes = base64.b64decode(payload.file_content)
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
         async with httpx.AsyncClient(timeout=1800.0) as client:
             response = await client.post(
-                f"{ollama_base_url}/api/chat",
+                f"{self.ollama_base_url}/api/chat",
                 json={
                     "model": model,
                     "messages": [
@@ -70,8 +56,12 @@ class VlmProcessor(BaseProcessor):
         # The actual response content is in response.json()['message']['content']
         analysis_result = response.json().get("message", {}).get("content", "")
 
+        self.logger.info("vlm.processing.finished")
+
         return ProcessorResult(
             processor_name=self.name,
             status="success",
-            results={"analysis": analysis_result},
+            output="VLM analysis completed successfully.",
+            structured_results={"analysis": analysis_result},
+            metadata={"page_number": payload.page_number}
         )

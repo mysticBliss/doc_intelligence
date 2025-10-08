@@ -3,7 +3,8 @@
   "description": "A workflow for noisy or skewed images. It first applies preprocessing steps (like deskewing and denoising) before running OCR to improve accuracy.",
   "execution_mode": "simple",
   "pipeline": [
-    {
+    { 
+      "id": "preprocess_image",
       "name": "image_preprocessing_processor",
       "params": {
         "steps": [
@@ -16,8 +17,10 @@
         ]
       }
     },
-    {
+    { 
+      "id": "run_ocr",
       "name": "ocr_processor",
+      "dependencies": ["preprocess_image"],
       "params": {
         "language": "eng"
       }
